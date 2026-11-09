@@ -38,14 +38,14 @@ describe("sample carts: expected decisions (SPEC §5)", () => {
     expect(d.reasonCodes).toEqual(expect.arrayContaining(["MERGED_DUPLICATE_CARTS", "HIGH_SELL_THROUGH"]));
   });
 
-  it("F-511: guest C-1008 is linked by exact email; one 10% single-use promo by email", () => {
+  it("F-511: guest C-1008 is linked by exact email; first touch is a full-price reminder by email", () => {
     const d = byCart(run.decisions, "C-1008");
     expect(d.cartIds.sort()).toEqual(["C-1002", "C-1008"]);
     expect(d.fanId).toBe("F-511");
     expect(d.outcome).toBe("propose");
-    expect(d.proposal?.offer).toEqual({ type: "promo_code", percentOff: 10, singleUse: true });
+    expect(d.proposal?.offer).toEqual({ type: "reminder" }); // SPEC §4a: a discount is never the first touch
     expect(d.proposal?.channel).toBe("email"); // push not consented
-    expect(d.proposal?.discountCostCents).toBe(1400);
+    expect(d.proposal?.discountCostCents).toBe(0);
     expect(d.reasonCodes).toEqual(expect.arrayContaining(["GUEST_MATCHED_BY_EMAIL", "LOW_SELL_THROUGH", "NEW_FAN"]));
   });
 
@@ -57,10 +57,10 @@ describe("sample carts: expected decisions (SPEC §5)", () => {
     expect(d.reasonCodes).toEqual(expect.arrayContaining(["LAPSED_FAN", "HIGH_SELL_THROUGH"]));
   });
 
-  it("F-333: season-pass holder in a 97% section goes to sales, never a discount", () => {
+  it("F-333: season-pass holder in a 97% section gets a non-price perk via the salesperson", () => {
     const d = byCart(run.decisions, "C-1004");
     expect(d.outcome).toBe("propose");
-    expect(d.proposal?.offer).toEqual({ type: "sales_handoff" });
+    expect(d.proposal?.offer).toMatchObject({ type: "perk", perkId: "pitchside-access" });
     expect(d.proposal?.channel).toBe("sales_task");
     expect(d.proposal?.discountCostCents).toBe(0);
     expect(d.reasonCodes).toContain("SEASON_PASS_HOLDER");
@@ -100,22 +100,55 @@ describe("gates", () => {
     expect(d.reasonCodes).toContain("UNRESOLVED_IDENTITY");
   });
 
-  it("a fan contacted in the last 7 days is suppressed", () => {
+  it("a fan contacted about a different match in the last 7 days is suppressed", () => {
     const contactHistory = [
-      { tenantId: "seawolves", fanId: "F-511", matchId: null, channel: "email" as const, sentAt: "2026-11-06T10:00:00-08:00" },
+      { tenantId: "seawolves", fanId: "F-511", matchId: "some-other-match", channel: "email" as const, offerType: "reminder" as const, sentAt: "2026-11-06T10:00:00-08:00" },
     ];
     const d = byCart(decide(baseInput({ contactHistory })).decisions, "C-1002");
     expect(d.outcome).toBe("suppress");
     expect(d.reasonCodes).toContain("RECENTLY_CONTACTED");
   });
+});
 
-  it("a fan already contacted about this match is suppressed even after 7 days", () => {
-    const first = byCart(decide(baseInput()).decisions, "C-1002");
-    const contactHistory = [
-      { tenantId: "seawolves", fanId: "F-511", matchId: first.matchId, channel: "email" as const, sentAt: "2026-10-01T10:00:00-07:00" },
-    ];
-    const d = byCart(decide(baseInput({ contactHistory })).decisions, "C-1002");
+describe("discount escalation: second touch only (SPEC §4a)", () => {
+  const matchOf = (cartId: string) => byCart(decide(baseInput()).decisions, cartId).matchId;
+  const reminderFor = (fanId: string, cartId: string, sentAt: string, offerType: "reminder" | "promo_code" = "reminder") => [
+    { tenantId: "seawolves", fanId, matchId: matchOf(cartId), channel: "email" as const, offerType, sentAt },
+  ];
+
+  it("F-511: an unconverted reminder ≥72h ago in a soft section escalates to a 10% single-use promo", () => {
+    const d = byCart(decide(baseInput({ contactHistory: reminderFor("F-511", "C-1002", "2026-11-05T10:00:00-08:00") })).decisions, "C-1002");
+    expect(d.outcome).toBe("propose");
+    expect(d.proposal?.offer).toEqual({ type: "promo_code", percentOff: 10, singleUse: true });
+    expect(d.proposal?.channel).toBe("email");
+    expect(d.proposal?.discountCostCents).toBe(1400);
+    expect(d.reasonCodes).toContain("ESCALATED_SECOND_TOUCH");
+  });
+
+  it("same export re-evaluated 4 days later (asOf moves, exportedAt fixed) escalates F-511", () => {
+    const contactHistory = reminderFor("F-511", "C-1002", SAMPLE_AS_OF);
+    const later = new Date(Date.parse(SAMPLE_AS_OF) + 4 * 86_400_000).toISOString();
+    const d = byCart(decide(baseInput({ contactHistory, asOf: later, exportedAt: SAMPLE_AS_OF })).decisions, "C-1002");
+    expect(d.proposal?.offer).toEqual({ type: "promo_code", percentOff: 10, singleUse: true });
+    expect(d.proposal?.facts.daysToKickoff).toBe(14);
+  });
+
+  it("a reminder less than 72h ago is not followed up yet", () => {
+    const d = byCart(decide(baseInput({ contactHistory: reminderFor("F-511", "C-1002", "2026-11-08T10:00:00-08:00") })).decisions, "C-1002");
     expect(d.outcome).toBe("suppress");
+    expect(d.reasonCodes).toContain("ALREADY_CONTACTED_FOR_MATCH");
+  });
+
+  it("no third touch: a promo already sent for this match means nothing more", () => {
+    const d = byCart(decide(baseInput({ contactHistory: reminderFor("F-511", "C-1002", "2026-11-01T10:00:00-08:00", "promo_code") })).decisions, "C-1002");
+    expect(d.outcome).toBe("suppress");
+    expect(d.reasonCodes).toContain("ALREADY_CONTACTED_FOR_MATCH");
+  });
+
+  it("no escalation in a high-demand section (F-204, Lower Bowl 88%)", () => {
+    const d = byCart(decide(baseInput({ contactHistory: reminderFor("F-204", "C-1001", "2026-11-05T10:00:00-08:00") })).decisions, "C-1001");
+    expect(d.outcome).toBe("suppress");
+    expect(d.reasonCodes).toContain("ALREADY_CONTACTED_FOR_MATCH");
   });
 
   it("a fan opted out of both channels gets nothing (non-season-pass)", () => {
@@ -133,13 +166,23 @@ describe("gates", () => {
 });
 
 describe("guardrails (independent second check, also run on marketer edits and at send time)", () => {
-  const run = decide(baseInput());
-  const promo = byCart(run.decisions, "C-1002");
+  const firstRun = decide(baseInput());
+  const contactHistory = [
+    { tenantId: "seawolves", fanId: "F-511", matchId: byCart(firstRun.decisions, "C-1002").matchId, channel: "email" as const, offerType: "reminder" as const, sentAt: "2026-11-05T10:00:00-08:00" },
+  ];
+  const promo = byCart(decide(baseInput({ contactHistory })).decisions, "C-1002");
   const tenant = DEFAULT_TENANTS.find((t) => t.tenantId === "seawolves")!;
-  const ctx = { tenant, consent: { email: true, push: false }, asOf: SAMPLE_AS_OF, contactHistory: [] };
+  // contactHistory here is what the send-time check sees; the earlier reminder is allowed (it's the first touch).
+  const ctx = { tenant, consent: { email: true, push: false }, asOf: SAMPLE_AS_OF, contactHistory };
 
-  it("passes the engine's own proposal", () => {
+  it("passes the engine's own escalated promo", () => {
+    expect(promo.proposal?.offer.type).toBe("promo_code");
     expect(checkProposal(promo, ctx)).toEqual([]);
+  });
+
+  it("blocks a send when this idempotency key was already sent (double-approve / retry)", () => {
+    const sent = [...contactHistory, { ...contactHistory[0], offerType: "promo_code" as const, sentAt: "2026-11-09T11:00:00-08:00" }];
+    expect(checkProposal(promo, { ...ctx, contactHistory: sent }).map((v) => v.code)).toContain("ALREADY_CONTACTED");
   });
 
   it("rejects a promo edited above 15%", () => {
@@ -200,6 +243,10 @@ describe("invariants on generated carts (SPEC §6)", () => {
       expect(seen).toEqual(carts.map((c) => c.cartId).sort());
 
       const proposals = run.decisions.filter((d) => d.outcome === "propose");
+      // guard against a vacuous pass: the generator must exercise every outcome
+      expect(proposals.length).toBeGreaterThan(0);
+      expect(run.decisions.some((d) => d.outcome === "hold")).toBe(true);
+      expect(run.decisions.some((d) => d.outcome === "suppress")).toBe(true);
       // 2. one proposal per fan
       const fans = proposals.map((d) => `${d.tenantId}:${d.fanId}`);
       expect(new Set(fans).size).toBe(fans.length);

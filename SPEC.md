@@ -1,6 +1,6 @@
 # Fan Offer Engine: spec for trigger #1 (cart win-back)
 
-Status: **draft for review**. This is the contract the engine is built against. The tests in
+Status: **v2, reviewed**. Reviewer redirects: F-511 promo moved to a second touch (§4a); F-333 sales handoff now carries a non-price perk. This is the contract the engine is built against. The tests in
 `src/engine/__tests__/` encode every decision in the table below. Change this file first, then the tests,
 then the code.
 
@@ -43,17 +43,31 @@ in exactly one decision (`propose`, `suppress`, or `hold`), so nothing drops sil
 | `MATCH_ALREADY_PLAYED` | suppress | Kickoff is in the past. |
 | `MATCH_TOO_SOON` | suppress | Kickoff < 6 h away. Too late for a considered send. |
 | `NO_CONSENTED_CHANNEL` | suppress | Email and push both opted out (sales task is still allowed for season-pass holders). |
-| `RECENTLY_CONTACTED` | suppress | Fan received any offer in the last 7 days, or one for this match ever. |
+| `RECENTLY_CONTACTED` | suppress | Fan received an offer about a *different* match in the last 7 days. |
+| `ALREADY_CONTACTED_FOR_MATCH` | suppress | Fan already got 2 touches for this match, or got 1 that doesn't qualify for escalation (§4a). |
 | `DUPLICATE_CART` | merged | Same fan + same match: carts collapse into one decision. Never two sends. |
 
 ## 4. Offer table (yield-aware)
 
 | Fan / inventory situation | Offer | Discount |
 |---|---|---|
-| Season-pass holder | `sales_handoff`: a task for the salesperson, no automated message | none |
+| Season-pass holder | `perk`: a non-price perk from the tenant's perk catalog (e.g. pre-match pitch-side access for the group), offered **personally by the salesperson** (`sales_task` channel, no automated message) | none |
 | Section sell-through ≥ 75% | `reminder`, or `merch_addon` (match-day shop, 10%) for a lapsed fan (last purchase > 120 days) | **no ticket discount**: these seats sell at full price |
-| Sell-through < 60%, match ≥ 7 days out, new or lapsed fan | `promo_code`, single-use, **10%** default, hard cap **15%** (marketer may edit up to 15) | yes |
-| Anything else | `reminder` | none |
+| Anything else, **first touch** for this match | `reminder` | none: **a discount is never the first touch** |
+| **Second touch** for this match, if §4a escalation applies | `promo_code`, single-use, **10%** default, hard cap **15%** (marketer may edit up to 15) | yes |
+
+### 4a. Discount escalation (reviewer redirect, see AI_LOG #2)
+
+The first draft gave F-511 a 10% promo on first touch. The review changed this: 18 days out there's time
+to try a full-price nudge first. A promo is a second touch for the same match, and only when all of these hold:
+
+- the previous touch for this match was a no-discount `reminder`, sent ≥ 72 h ago, and the fan still has
+  an open cart for the match;
+- the section is still < 60% sold;
+- kickoff is ≥ 48 h away;
+- the fan is not a season-pass holder.
+
+Max 2 touches per fan per match. Anything else after a first touch → `ALREADY_CONTACTED_FOR_MATCH`.
 
 Channel: prefer the source of the fan's most recent cart (App → push, Web → email) if consented, otherwise
 the other consented channel.
@@ -63,9 +77,9 @@ the other consented channel.
 | Carts | Fan | Outcome | Offer | Channel | Why |
 |---|---|---|---|---|---|
 | C-1001 + C-1006 | F-204 | propose | reminder | push | Two attempts in an hour (web, then app): high intent. Lower Bowl 88% sold, regular buyer. A discount gives away revenue we'd get anyway. One send, not two. |
-| C-1002 + C-1008 | F-511 | propose | promo_code 10% | email | First-time buyer; the guest cart is the same person (exact email match), so two attempts. Upper Deck 41% sold, 18 days out: those seats likely go unsold. $14 off a $140 cart wins a new fan. Email is the only consented channel. |
+| C-1002 + C-1008 | F-511 | propose | reminder | email | First-time buyer; the guest cart is the same person (exact email match), so two attempts = real intent. Upper Deck is soft (41%), but 18 days out we nudge at full price first. If it doesn't convert in 72 h, the next run escalates to a 10% promo (§4a). Email is the only consented channel. |
 | C-1003 | F-092 | propose | merch_addon 10% | push | Lapsed (180 days), email opted out. Lower Bowl 88%: don't cut the ticket price. Add match-day merch value instead. |
-| C-1004 | F-333 | propose | sales_handoff | sales_task | Season-pass holder, 40 tickets, 6 Club seats at $540. Club is 97% sold. A discount is pure giveaway; a personal call protects the relationship. |
+| C-1004 | F-333 | propose | perk (pitch-side access) | sales_task | Season-pass holder, 40 tickets, bringing a group of 6 into Club at $540. Club is 97% sold, so a discount is pure giveaway. A perk costs little, rewards the club's best fan, and the salesperson delivers it personally. |
 | C-1005 | F-777 | suppress | — | — | `MATCH_ALREADY_PLAYED`. |
 | C-1007 | F-618 | hold | — | — | `TENANT_NOT_ENABLED`: league team still onboarding; shop data not synced (data issue logged). |
 

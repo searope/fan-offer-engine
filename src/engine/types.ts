@@ -42,6 +42,9 @@ export interface TenantConfig {
   /** Hard cap enforced by guardrails. The brief: promo codes are single-use and capped at 15%. */
   maxPromoPct: number;
   defaultPromoPct: number;
+  merchAddonPct: number;
+  /** Non-price perks the salesperson can offer top fans. First entry is the default. */
+  perks: { perkId: string; label: string }[];
 }
 
 export interface ContactRecord {
@@ -49,6 +52,7 @@ export interface ContactRecord {
   fanId: string;
   matchId: string | null;
   channel: Channel;
+  offerType: Offer["type"];
   sentAt: string; // ISO
 }
 
@@ -56,12 +60,12 @@ export type Offer =
   | { type: "reminder" }
   | { type: "promo_code"; percentOff: number; singleUse: true }
   | { type: "merch_addon"; percentOff: number; singleUse: true }
-  | { type: "seat_upgrade" }
-  | { type: "match_pass" }
-  | { type: "sales_handoff" };
+  | { type: "perk"; perkId: string; label: string };
 
 export type ReasonCode =
   // gates
+  | "BAD_DATA"
+  | "OTHER_OFFER_THIS_RUN"
   | "UNKNOWN_TENANT"
   | "TENANT_NOT_ENABLED"
   | "UNRESOLVED_IDENTITY"
@@ -69,6 +73,7 @@ export type ReasonCode =
   | "MATCH_TOO_SOON"
   | "NO_CONSENTED_CHANNEL"
   | "RECENTLY_CONTACTED"
+  | "ALREADY_CONTACTED_FOR_MATCH"
   // signals that shaped a proposal
   | "MERGED_DUPLICATE_CARTS"
   | "GUEST_MATCHED_BY_EMAIL"
@@ -78,6 +83,7 @@ export type ReasonCode =
   | "NEW_FAN"
   | "LAPSED_FAN"
   | "REGULAR_FAN"
+  | "ESCALATED_SECOND_TOUCH"
   | "CHANNEL_FROM_RECENT_SOURCE"
   | "CHANNEL_FALLBACK_CONSENT";
 
@@ -89,8 +95,24 @@ export interface Proposal {
   discountCostCents: number;
   /** Proposal can't be sent after this (kickoff minus a buffer). */
   expiresAt: string;
-  /** Outbox idempotency key: tenant:trigger:fan:match. */
+  /** 1 = first touch for this fan+match, 2 = escalation (SPEC §4a). Max 2. */
+  touchNumber: 1 | 2;
+  /** Outbox idempotency key: tenant:trigger:fan:match:touch. */
   idempotencyKey: string;
+  /** Facts the reason and the copy are built from. The model only ever sees these. */
+  facts: OfferFacts;
+}
+
+export interface OfferFacts {
+  teamName: string;
+  section: string;
+  seats: number;
+  sectionSoldPct: number;
+  daysToKickoff: number;
+  kickoffAt: string;
+  lifetimeTickets: number | null;
+  daysSinceLastPurchase: number | null; // null = never or unknown
+  latestSource: CartSource;
 }
 
 export interface Decision {
@@ -112,7 +134,10 @@ export interface EngineInput {
   fanAccounts: { fanId: string; email: string }[];
   contactHistory: ContactRecord[];
   tenants: TenantConfig[];
+  /** "Now" for every gate and expiry. */
   asOf: string;
+  /** When the cart export was taken; relative values ("3 hrs ago") are anchored here. Defaults to asOf. */
+  exportedAt?: string;
 }
 
 export interface EngineRun {
@@ -127,6 +152,7 @@ export interface GuardrailViolation {
     | "PROMO_OVER_CAP"
     | "PROMO_NOT_SINGLE_USE"
     | "CHANNEL_NOT_CONSENTED"
+    | "CHANNEL_OFFER_MISMATCH"
     | "TENANT_NOT_ENABLED"
     | "EXPIRED"
     | "ALREADY_CONTACTED";
