@@ -60,8 +60,20 @@ export function ReviewQueue() {
     }
   };
 
+  const [hideExpired, setHideExpired] = useState(true);
+
+  // Expired = marked expired by a run, or still open but past its send-by time on the app's clock
+  // (a send would be refused anyway; the next run marks it expired).
+  const isExpired = useCallback(
+    (p: ProposalView) =>
+      p.status === "expired" ||
+      (["pending_review", "blocked", "failed"].includes(p.status) && !!p.proposal && !!data && Date.parse(p.proposal.expiresAt) <= Date.parse(data.now)),
+    [data],
+  );
+  const expiredCount = useMemo(() => (data?.proposals ?? []).filter(isExpired).length, [data, isExpired]);
+
   const groups = useMemo(() => {
-    const ps = data?.proposals ?? [];
+    const ps = (data?.proposals ?? []).filter((p) => !(hideExpired && isExpired(p)));
     return {
       // Most urgent first: the offer that expires soonest is the one to review next.
       review: ps
@@ -71,7 +83,7 @@ export function ReviewQueue() {
       closed: ps.filter((p) => p.status === "rejected" || p.status === "expired"),
       not_actioned: ps.filter((p) => p.status === "held" || p.status === "suppressed"),
     };
-  }, [data]);
+  }, [data, hideExpired, isExpired]);
 
   if (!data) return <div className="p-10 text-slate-500">{error ?? "Loading…"}</div>;
   const m = data.metrics;
@@ -127,6 +139,10 @@ export function ReviewQueue() {
             {label}
           </button>
         ))}
+        <label className="ml-auto flex cursor-pointer items-center gap-1.5 self-center pb-1 text-xs text-slate-600" title="Expired offers can't be sent any more. Untick to see them.">
+          <input type="checkbox" className="accent-teal-700" checked={hideExpired} onChange={(e) => setHideExpired(e.target.checked)} />
+          Hide expired{expiredCount ? ` (${expiredCount})` : ""}
+        </label>
       </nav>
 
       <main className="mt-4 space-y-4">
