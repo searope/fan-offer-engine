@@ -16,12 +16,27 @@ npm run dev        # http://localhost:3000, then click "Run engine on stale cart
 npm test           # 50 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
 ```
 
-Claude-written copy (optional; without it the app uses safe templates and says so on each card):
+### Claude-written copy: template messages are the expected default
 
-```powershell
-.\node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe auth login
-$env:LIVE_MODEL="1"; npx vitest run copy -t live   # check the model path end to end
-```
+**If you unzipped this and ran it as-is, every card will say "Template copy · Claude unavailable", plus a
+yellow "Model copy fell back to templates" banner. That is intended behavior, not a bug.** The copy step
+calls Claude through the Claude Agent SDK, which needs a credential, and none ships with the code. When the
+model is unavailable, times out, or writes something that breaks a rule, the engine uses a safe,
+pre-checked template, labels the card, and raises an alert. Offers, discounts, channels, and every
+guardrail are decided by rules and work the same either way. Only the wording changes.
+
+To see Claude-drafted copy, pick one of these, then click "Run engine on stale carts" again:
+
+- **Sign in with a Claude account** (one time; the login is stored in your user profile, not in this repo):
+
+  ```powershell
+  npx.cmd @anthropic-ai/claude-code auth login
+  ```
+
+- **Or use an API key:** create `.env.local` in the project root with `ANTHROPIC_API_KEY=sk-ant-...` and
+  restart `npm run dev`. The SDK picks it up from the server's environment. `.env*` is git-ignored.
+
+Check the model path end to end with `$env:LIVE_MODEL="1"; npx vitest run copy -t live`.
 
 `$env:COPY_MODEL_PROVIDER="off"` turns the model off. "Demo controls" at the bottom of the page reset the
 data, advance the clock (to show the discount escalation), toggle fan opt-ins, and simulate a provider outage.
