@@ -35,6 +35,9 @@ const MONEY = /\$\s?\d/;
  * Deterministic checks on copy, whether a model, a template, or a marketer wrote it.
  * Returns human-readable problems; empty = OK.
  */
+/** "$10" or "$10.50": how a voucher cap is written to the fan. */
+export const voucherCapText = (cents: number) => `$${cents % 100 === 0 ? cents / 100 : (cents / 100).toFixed(2)}`;
+
 /** List markers ("1. ", "2) ") are formatting, not facts; strip them before checking numbers. */
 const stripListMarkers = (s: string) => s.replace(/^\s*\d{1,2}[.)]\s+/gm, "");
 
@@ -70,12 +73,22 @@ export function lintCopy(copy: MessageCopy, offer: Offer, channel: Channel, fact
     if (offer.type === "merch_addon" && /\b(ticket|seat)s? (discount|% ?off)/i.test(text)) p.push("Merch add-on must not read as a ticket discount.");
   }
 
-  if (MONEY.test(text)) p.push("Mentions a price. Prices can change before the fan clicks, so leave them out.");
+  // A merch voucher's cap is part of its terms: the fan must be told it, in exactly that amount.
+  let checked = text;
+  let capNumber = -1;
+  if (offer.type === "merch_addon") {
+    const cap = voucherCapText(offer.maxValueCents);
+    if (!text.includes(`up to ${cap}`)) p.push(`Must state the voucher cap as "up to ${cap}".`);
+    checked = text.split(cap).join("");
+    capNumber = Math.floor(offer.maxValueCents / 100);
+  }
+
+  if (MONEY.test(checked)) p.push("Mentions a price. Prices can change before the fan clicks, so leave them out.");
   if (FALSE_URGENCY.test(text)) p.push("Uses pressure language we don't use with our fans.");
   if (offer.type === "perk") p.push("Perks are offered personally by the salesperson, not by automated message.");
 
   // Numbers must come from the facts (no invented "only 3 seats left").
-  const allowed = new Set<number>([facts.seats, facts.daysToKickoff, hasCode ? offer.percentOff : -1]);
+  const allowed = new Set<number>([facts.seats, facts.daysToKickoff, hasCode ? offer.percentOff : -1, capNumber]);
   const nums = [...text.replace(PROMO_PLACEHOLDER, "").matchAll(/\b\d+\b/g)].map((m) => Number(m[0]));
   const invented = nums.filter((n) => !allowed.has(n));
   if (invented.length) p.push(`Contains numbers not in the facts: ${[...new Set(invented)].join(", ")}.`);

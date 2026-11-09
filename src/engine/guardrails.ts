@@ -34,6 +34,12 @@ export function checkProposal(d: Decision, ctx: GuardrailContext): GuardrailViol
     }
     if (p.offer.singleUse !== true) v.push({ code: "PROMO_NOT_SINGLE_USE", message: "Promo codes must be single-use." });
   }
+  if (p.offer.type === "merch_addon") {
+    const max = ctx.tenant.merchAddonMaxCents;
+    if (!(Number.isInteger(p.offer.maxValueCents) && p.offer.maxValueCents > 0 && p.offer.maxValueCents <= max)) {
+      v.push({ code: "MERCH_OVER_CAP", message: `A merch voucher must be capped at $${max / 100} or less.` });
+    }
+  }
 
   if ((p.offer.type === "perk") !== (p.channel === "sales_task")) {
     v.push({ code: "CHANNEL_OFFER_MISMATCH", message: "Perks go through the salesperson (sales task) only, and sales tasks carry a perk." });

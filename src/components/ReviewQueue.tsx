@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProposalView, queue as queueFn } from "@/server/service";
-import type { Channel, Offer, RawCartRow } from "@/engine/types";
+import type { Channel, CostLine, Offer, RawCartRow } from "@/engine/types";
 import { describeChannel, describeOffer } from "@/engine/reasons";
 import { PROMO_PLACEHOLDER } from "@/engine/copy/lint";
 
@@ -96,11 +96,16 @@ export function ReviewQueue() {
         ))}
       </div>
 
-      <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+      <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
         <Kpi label="Needs review" value={String(m.counts.pending + m.counts.blocked + m.counts.failed)} />
         <Kpi label="Sent" value={String(m.counts.sent)} />
         <Kpi label="Cart value reached" value={money(m.revenueAtStakeCents)} hint="Value of carts behind sent offers" />
-        <Kpi label="Discount committed" value={money(m.discountCommittedCents)} hint="Max give-away if every sent code is redeemed" />
+        <Kpi label="Ticket discount committed" value={money(m.ticketDiscountCommittedCents)} hint="Ticket revenue given away if every sent ticket code is used" />
+        <Kpi
+          label="Merch vouchers (max)"
+          value={money(m.merchVoucherMaxCents)}
+          hint={`Worst case if every sent voucher is used to its cap. Shop margin, not ticket revenue.${m.perksPromised ? ` Plus ${m.perksPromised} perk(s) promised.` : ""}`}
+        />
         <Kpi label="Approval rate" value={pct(m.approvalRate)} hint="Approved ÷ decided" />
         <Kpi label="Edit rate" value={pct(m.editRate)} hint="Edited before approval. High = engine or copy needs tuning" />
         <Kpi label="Claude-written copy" value={pct(m.modelCopyShare)} hint="Rest is safe template copy" />
@@ -130,7 +135,7 @@ export function ReviewQueue() {
         )}
         {tab === "not_actioned"
           ? groups.not_actioned.map((p) => <NoOfferRow key={p.id} p={p} />)
-          : groups[tab].map((p) => <OfferCard key={p.id} p={p} onChange={load} />)}
+          : groups[tab].map((p) => <OfferCard key={p.id} p={p} onChange={load} now={data.now} />)}
       </main>
 
       {data.lastRun?.stats && <DataIssues issues={(data.lastRun.stats as { dataIssues: { cartId: string; field: string; raw: string; issue: string }[] }).dataIssues} />}
@@ -256,7 +261,51 @@ function SellThrough({ pct }: { pct: number }) {
 
 // ---------------------------------------------------------------------------
 
-function OfferCard({ p, onChange }: { p: ProposalView; onChange: () => Promise<void> }) {
+/** One line per kind of cost. Never one "discount" number: ticket revenue, merch vouchers and perks are different money. */
+function CostLines({ costs }: { costs: CostLine[] }) {
+  if (costs.length === 0) return <div>No discount</div>;
+  return (
+    <>
+      {costs.map((c, i) =>
+        c.kind === "ticket_discount" ? (
+          <div key={i}>
+            Ticket discount <b className="text-sm text-rose-700">{money(c.amountCents ?? 0)}</b>
+          </div>
+        ) : c.kind === "merch_voucher" ? (
+          <div key={i} title="Worst case. The actual cost depends on what the fan buys in the shop, and is zero if the code is never used.">
+            Merch voucher <b className="text-sm text-amber-700">up to {money(c.amountCents ?? 0)}</b>
+            <div className="text-[11px] text-slate-400">only if redeemed</div>
+          </div>
+        ) : (
+          <div key={i} title={c.label}>
+            <b className="text-sm text-violet-700">Perk</b>, no discount
+          </div>
+        ),
+      )}
+    </>
+  );
+}
+
+/** The send-by deadline, prominent and colored by urgency, measured against the app's clock. */
+function SendBy({ expiresAt, now }: { expiresAt: string; now: string }) {
+  const ms = Date.parse(expiresAt) - Date.parse(now);
+  const h = Math.floor(ms / 3_600_000);
+  const left = ms <= 0 ? "expired" : h >= 48 ? `${Math.floor(h / 24)} days left` : h >= 1 ? `${h} h left` : "under 1 h left";
+  const cls = ms <= 0 || h < 24 ? "border-red-300 bg-red-50 text-red-800" : h < 48 ? "border-amber-300 bg-amber-50 text-amber-900" : "border-slate-300 bg-white text-slate-700";
+  return (
+    <div className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${cls}`} title="After this the offer can't be sent: it's too close to kickoff.">
+      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+        <circle cx="8" cy="8" r="6.2" />
+        <path d="M8 4.5V8l2.4 1.6" strokeLinecap="round" />
+      </svg>
+      <span>
+        Send by <b>{fmtDate(expiresAt)}</b> · {left}
+      </span>
+    </div>
+  );
+}
+
+function OfferCard({ p, onChange, now }: { p: ProposalView; onChange: () => Promise<void>; now: string }) {
   const [mode, setMode] = useState<"view" | "edit" | "reject">("view");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{ message: string; problems: string[] } | null>(null);
@@ -307,14 +356,12 @@ function OfferCard({ p, onChange }: { p: ProposalView; onChange: () => Promise<v
             {prop.touchNumber === 2 && <Chip className="bg-orange-50 text-orange-700">Follow-up (2nd touch)</Chip>}
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-start gap-4">
           <div className="text-right text-xs text-slate-500">
             <div>
               Cart <b className="text-sm text-slate-900">{money(prop.cartValueCents)}</b>
             </div>
-            <div>
-              Discount <b className={`text-sm ${prop.discountCostCents ? "text-rose-700" : "text-slate-900"}`}>{money(prop.discountCostCents)}</b>
-            </div>
+            <CostLines costs={prop.costs ?? []} />
           </div>
           <Chip className={statusCls}>{statusLabel}</Chip>
         </div>
@@ -327,6 +374,11 @@ function OfferCard({ p, onChange }: { p: ProposalView; onChange: () => Promise<v
           ) : (
             <MessagePreview p={p} />
           )}
+          {actionable && (
+            <div className="mt-2">
+              <SendBy expiresAt={prop.expiresAt} now={now} />
+            </div>
+          )}
         </div>
         <div className="text-sm">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Why</div>
@@ -338,7 +390,6 @@ function OfferCard({ p, onChange }: { p: ProposalView; onChange: () => Promise<v
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs text-slate-400">Send by {fmtDate(prop.expiresAt)}, or it expires.</p>
         </div>
       </div>
 
@@ -460,14 +511,17 @@ function EditPanel({ p, busy, onSave, onCancel }: { p: ProposalView; busy: boole
   const structuralChange = type !== prop.offer.type || channel !== prop.channel || ("percentOff" in prop.offer && percent !== prop.offer.percentOff);
   const copyChanged = subject !== p.copy?.subject || body !== p.copy?.body;
 
-  const offer = (): Offer =>
+  // The server fills a merch voucher's cap from the team setting; the UI never invents one.
+  const offer = (): object =>
     type === "reminder"
       ? { type }
       : type === "perk"
         ? prop.offer.type === "perk"
           ? prop.offer
           : { type, perkId: "pitchside-access", label: "Pre-match pitch-side access for your group" }
-        : { type, percentOff: percent, singleUse: true };
+        : type === "merch_addon"
+          ? { type, percentOff: percent, singleUse: true, ...(prop.offer.type === "merch_addon" ? { maxValueCents: prop.offer.maxValueCents } : {}) }
+          : { type, percentOff: percent, singleUse: true };
 
   const save = () => {
     const patch: Record<string, unknown> = {};
@@ -502,6 +556,7 @@ function EditPanel({ p, busy, onSave, onCancel }: { p: ProposalView; busy: boole
           </select>
         </label>
       </div>
+      {type === "merch_addon" && <p className="text-xs text-amber-800">Merch vouchers are capped by the team setting, and the message must tell the fan the cap (&quot;up to $…&quot;).</p>}
       {structuralChange && !copyChanged && <p className="text-xs text-teal-800">Offer or channel changed: the message will be rewritten from the safe template. Edit it after saving.</p>}
       <label className="block">
         <span className="text-xs text-slate-500">Subject / title</span>

@@ -13,7 +13,7 @@ for copy, Vitest. No CRM: delivery goes through a transactional email provider a
 ```powershell
 npm install
 npm run dev        # http://localhost:3000, then click "Run engine on stale carts"
-npm test           # 50 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
+npm test           # 62 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
 ```
 
 ### Claude-written copy: template messages are the expected default
@@ -48,6 +48,7 @@ data, advance the clock (to show the discount escalation), toggle fan opt-ins, a
 | `SPEC.md` | The decision contract, written and reviewed **before** the engine (see Section C) |
 | `src/engine/decide.ts` | Pure, deterministic decisions: normalize → identity → group → gates → offer → channel |
 | `src/engine/policy.ts`, `tenants.ts` | Every threshold in one place; per-team config (onboarding a team = config) |
+| `src/engine/offers.ts` | What each offer type costs, as typed lines (ticket discount, capped merch voucher, perk) |
 | `src/engine/guardrails.ts` | Independent second check: 15% cap, single-use, consent, expiry, already contacted |
 | `src/engine/copy/` | Model adapter (`CopyModel`), prompt, schema + lint, template fallback |
 | `src/server/service.ts` | Run, approve (send-time re-check), edit, reject, bulk approve, outbox, metrics/alerts |
@@ -103,7 +104,7 @@ guest carts, each become one decision, so nobody gets two messages. Of 8 sample 
 
 **Which offer.** Discount depth follows inventory. Where a section is selling (≥ 75% sold), a ticket discount
 gives away revenue we'd get anyway. F-204, a regular, gets a plain reminder. F-092, lapsed 180 days, gets a
-match-day merch voucher, which adds value without cutting the ticket price. Season-pass holders never get a
+match-day merch voucher (capped at $10), which adds value without cutting the ticket price. Season-pass holders never get a
 code: F-333's six Club seats (97% sold) go to the salesperson with a non-price perk. **A discount is never the
 first touch.** F-511, a first-time buyer in a soft section 18 days out, gets a full-price reminder. Only if
 that doesn't convert in 72 hours, with the section still under 60% sold, does the next run propose a
@@ -112,14 +113,13 @@ single-use 10% code (hard cap 15%).
 **Which channel.** Consent first (live consent, not the export's snapshot), then where the fan last was:
 an app cart gets push, a web cart gets email.
 
-**Rules vs. model.** Eligibility, offer, discount and channel are rules: they involve money and trust, and
-must be predictable and auditable. Claude writes the message, which is the work a marketer does by hand
-today. Its output is schema-checked and linted (no unearned discount, prices, invented numbers or pressure
-language). On any failure the card falls back to a safe template and says why. The
-reason shown to the marketer is generated from reason codes, so it can't drift from the rule that fired.
+**Rules vs. model.** Eligibility, offer, discount and channel are rules, because money and trust need to be
+predictable and auditable. Claude only writes the message. That text is linted, reviewed, and replaced by a
+safe template on any failure (see "Where AI is used").
 
 **Not built yet:** real ingestion (the sample export is the input), auth and roles, real providers, holdout
-groups, copy A/B tests, seat-upgrade and match-pass offers.
+groups, copy A/B tests, seat-upgrade and match-pass offers. Marketers can't edit rules: thresholds live in
+`policy.ts` and team settings in `tenants.ts`, so a change is a reviewed, tested deploy.
 **Next:** holdout measurement (B1), hourly runs off ticketing's cart events, then trigger #2.
 
 **A second trigger without a rewrite.** Everything after "who is a candidate" is trigger-agnostic: the
@@ -140,7 +140,7 @@ policy.
 (F-204 probably would). So a random holdout (10–20% of eligible decisions, decided and logged but not sent)
 is compared on cart completion within 7 days, per offer type. With a small fan base we read this over weeks
 and across matches, not per send. Alongside it:
-- **Discount efficiency:** redeemed discount $ per incremental $. Single-use codes are tied to the
+- **Discount efficiency:** redeemed ticket discount $ and merch voucher $ (tracked separately) per incremental $. Single-use codes are tied to the
   proposal's idempotency key, so every redemption traces back to one offer.
 - **Marketer signal:** approve / edit / reject rates by offer type, with reject reasons (already captured in
   the UI). A high edit rate on copy means the prompt needs tuning; on offers, the rules do.
@@ -209,3 +209,9 @@ worked as designed. **Me:** _…_
 **5. UI review.** *Asked for:* simpler marketer cards, raw export data per card, and bulk approve. *AI pushed
 back on bulk approve:* it built a version limited to no-discount reminders, with a confirm list and a per-id
 server re-check; discounts and perks stay one by one. **Me (agree / change):** _…_
+
+**6. "Discount $0" on a merch voucher.** F-092's card offered a 10% merch voucher but showed "Discount $0":
+the field only counted ticket revenue, so the voucher's cost was invisible and had no upper bound. *AI gave:* a
+design with typed cost lines per offer type and a per-team voucher cap. *Changed:* cards show one line per kind
+of cost, metrics keep ticket discount and voucher exposure apart, the voucher is capped ($10 for the Seawolves)
+and the fan is told the cap. **Me (how I spotted it, why it matters):** _…_

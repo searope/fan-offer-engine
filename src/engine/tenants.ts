@@ -19,6 +19,7 @@ export const DEFAULT_TENANTS: TenantConfig[] = [
     maxPromoPct: 15,
     defaultPromoPct: 10,
     merchAddonPct: 10,
+    merchAddonMaxCents: 1000,
     perks: [{ perkId: "pitchside-access", label: "Pre-match pitch-side access for your group" }],
   },
   {
@@ -28,6 +29,7 @@ export const DEFAULT_TENANTS: TenantConfig[] = [
     maxPromoPct: 15,
     defaultPromoPct: 10,
     merchAddonPct: 10,
+    merchAddonMaxCents: 1000,
     perks: [],
   },
 ];

@@ -10,6 +10,7 @@ import { draftCopy, type DraftedCopy } from "@/engine/copy/draft";
 import { lintCopy, MessageCopySchema, PROMO_PLACEHOLDER, type MessageCopy } from "@/engine/copy/lint";
 import { ClaudeAgentCopyModel, type CopyModel } from "@/engine/copy/model";
 import { templateCopy } from "@/engine/copy/templates";
+import { costsOf, costTotal } from "@/engine/offers";
 import type { Channel, ContactRecord, Decision, Offer, Proposal, RawCartRow, ReasonCode } from "@/engine/types";
 import { DATA_DIR, db, getSetting, resetDb, setSetting, tx } from "./db";
 import { providers } from "./delivery";
@@ -325,8 +326,8 @@ function mintCode(r: ProposalRow, p: Proposal): string | null {
   const code = `${(r.tenant_id ?? "X").slice(0, 3).toUpperCase()}-${randomBytes(4).toString("hex").toUpperCase()}`;
   // DB CHECK constraints enforce 1..15% and single use: a third line of defense after the engine and guardrails.
   db()
-    .prepare("INSERT INTO promo_codes(code, tenant_id, fan_id, kind, percent_off, max_redemptions, idempotency_key, created_at) VALUES(?,?,?,?,?,1,?,?)")
-    .run(code, r.tenant_id, r.fan_id, p.offer.type, p.offer.percentOff, p.idempotencyKey, new Date().toISOString());
+    .prepare("INSERT INTO promo_codes(code, tenant_id, fan_id, kind, percent_off, max_value_cents, max_redemptions, idempotency_key, created_at) VALUES(?,?,?,?,?,?,1,?,?)")
+    .run(code, r.tenant_id, r.fan_id, p.offer.type, p.offer.percentOff, p.offer.type === "merch_addon" ? p.offer.maxValueCents : null, p.idempotencyKey, new Date().toISOString());
   return code;
 }
 
@@ -363,7 +364,7 @@ async function dispatch(outboxId: number, actor: string) {
 const OfferSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("reminder") }),
   z.object({ type: z.literal("promo_code"), percentOff: z.number().int(), singleUse: z.literal(true) }),
-  z.object({ type: z.literal("merch_addon"), percentOff: z.number().int(), singleUse: z.literal(true) }),
+  z.object({ type: z.literal("merch_addon"), percentOff: z.number().int(), maxValueCents: z.number().int().optional(), singleUse: z.literal(true) }),
   z.object({ type: z.literal("perk"), perkId: z.string(), label: z.string() }),
 ]);
 export const EditSchema = z.object({
@@ -380,14 +381,12 @@ export function edit(id: number, patch: z.infer<typeof EditSchema>, actor: strin
   // A retry after a failed send must not change what is in the outbox.
   if (r.status === "failed") throw new HttpError(409, "This offer is already in the outbox. Retry it, or reject it.");
 
-  const offer = (patch.offer ?? before.proposal.offer) as Offer;
+  const tenant = DEFAULT_TENANTS.find((t) => t.tenantId === r.tenant_id);
+  let offer = (patch.offer ?? before.proposal.offer) as Offer;
+  // A marketer switching to a merch voucher gets the team's cap unless they set a lower one.
+  if (offer.type === "merch_addon" && offer.maxValueCents === undefined) offer = { ...offer, maxValueCents: tenant?.merchAddonMaxCents ?? 0 };
   const channel = patch.channel ?? before.proposal.channel;
-  const proposal: Proposal = {
-    ...before.proposal,
-    offer,
-    channel,
-    discountCostCents: offer.type === "promo_code" ? Math.round((before.proposal.cartValueCents * offer.percentOff) / 100) : 0,
-  };
+  const proposal: Proposal = { ...before.proposal, offer, channel, costs: costsOf(offer, before.proposal.cartValueCents) };
   const structural = JSON.stringify(offer) !== JSON.stringify(before.proposal.offer) || channel !== before.proposal.channel;
   const copy: MessageCopy = patch.copy ?? (structural ? templateCopy(offer, channel, proposal.facts) : before.copy!);
   const copySource = patch.copy ? "marketer" : structural ? "template" : r.copy_source;
@@ -490,7 +489,10 @@ function metrics(ps: ProposalView[]) {
     approvalRate: decided.length ? (decided.length - by("rejected")) / decided.length : null,
     editRate: decided.length ? edited.filter((p) => decided.includes(p)).length / decided.length : null,
     revenueAtStakeCents: sent.reduce((s, p) => s + (p.proposal?.cartValueCents ?? 0), 0),
-    discountCommittedCents: sent.reduce((s, p) => s + (p.proposal?.discountCostCents ?? 0), 0),
+    // Kept apart on purpose: lost ticket revenue (exact) vs. merch vouchers (worst case, only if redeemed).
+    ticketDiscountCommittedCents: sent.reduce((s, p) => s + costTotal(p.proposal?.costs ?? [], "ticket_discount"), 0),
+    merchVoucherMaxCents: sent.reduce((s, p) => s + costTotal(p.proposal?.costs ?? [], "merch_voucher"), 0),
+    perksPromised: sent.filter((p) => p.proposal?.costs.some((c) => c.kind === "perk")).length,
     modelCopyShare: offers.length ? offers.filter((p) => p.copySource === "model").length / offers.length : null,
     alerts,
   };

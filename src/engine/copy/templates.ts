@@ -1,5 +1,5 @@
 import type { Channel, Offer, OfferFacts } from "../types";
-import { PROMO_PLACEHOLDER, type MessageCopy } from "./lint";
+import { PROMO_PLACEHOLDER, voucherCapText, type MessageCopy } from "./lint";
 
 /** Deterministic fallback copy. Always passes lintCopy (tested). Used when the model is off, fails, or is rejected. */
 export function templateCopy(offer: Offer, channel: Channel, f: OfferFacts): MessageCopy {
@@ -26,13 +26,15 @@ export function templateCopy(offer: Offer, channel: Channel, f: OfferFacts): Mes
             subject: `${offer.percentOff}% off to finish your ${f.teamName} order`,
             body: `You picked out ${seats} in the ${f.section} for our match ${when}. Here's ${offer.percentOff}% off to finish your order: ${PROMO_PLACEHOLDER} (single use).\n\nSee you at the match.`,
           };
-    case "merch_addon":
+    case "merch_addon": {
+      const cap = voucherCapText(offer.maxValueCents);
       return push
-        ? { subject: "Your seat + a match-day bonus", body: `Finish your ticket for the match ${when} and get ${offer.percentOff}% off in the team shop with ${PROMO_PLACEHOLDER}.` }
+        ? { subject: "Your seat + a match-day bonus", body: `Finish your ticket for the match ${when} and get ${offer.percentOff}% off in the team shop, up to ${cap}, with ${PROMO_PLACEHOLDER}.` }
         : {
             subject: "A match-day bonus when you finish your order",
-            body: `Your ${seats} for the match ${when} is still in your cart. Complete it and get ${offer.percentOff}% off in the team shop on match day with ${PROMO_PLACEHOLDER}.`,
+            body: `Your ${seats} for the match ${when} is still in your cart. Complete it and get ${offer.percentOff}% off in the team shop on match day, up to ${cap}, with ${PROMO_PLACEHOLDER}.`,
           };
+    }
     case "perk":
     case "reminder":
       return push

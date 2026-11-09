@@ -11,7 +11,7 @@ export function describeOffer(o: Offer): string {
     case "promo_code":
       return `${o.percentOff}% off promo code (single-use)`;
     case "merch_addon":
-      return `${o.percentOff}% off match-day merch (single-use)`;
+      return `${o.percentOff}% off match-day merch, up to $${o.maxValueCents / 100} (single-use)`;
     case "perk":
       return `Perk: ${o.label}`;
   }

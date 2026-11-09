@@ -52,9 +52,24 @@ in exactly one decision (`propose`, `suppress`, or `hold`), so nothing drops sil
 | Fan / inventory situation | Offer | Discount |
 |---|---|---|
 | Season-pass holder | `perk`: a non-price perk from the tenant's perk catalog (e.g. pre-match pitch-side access for the group), offered **personally by the salesperson** (`sales_task` channel, no automated message) | none |
-| Section sell-through ≥ 75% | `reminder`, or `merch_addon` (match-day shop, 10%) for a lapsed fan (last purchase > 120 days) | **no ticket discount**: these seats sell at full price |
+| Section sell-through ≥ 75% | `reminder`, or `merch_addon` (match-day shop, 10%, **capped per voucher**, $10 for the Seawolves; the fan is told the cap) for a lapsed fan (last purchase > 120 days) | **no ticket discount**: these seats sell at full price |
 | Anything else, **first touch** for this match | `reminder` | none: **a discount is never the first touch** |
 | **Second touch** for this match, if §4a escalation applies | `promo_code`, single-use, **10%** default, hard cap **15%** (marketer may edit up to 15) | yes |
+
+### 4b. Offer costs are typed lines, never one "discount" number
+
+Each offer type declares what it gives away (`src/engine/offers.ts`):
+
+| Offer | Cost line | Basis |
+|---|---|---|
+| `reminder` | none | |
+| `promo_code` | ticket discount, e.g. $14 | exact (lost ticket revenue) |
+| `merch_addon` | merch voucher, up to the tenant cap | max (shop margin, only if redeemed) |
+| `perk` | perk | non-monetary |
+
+Lines of different kinds are never added together: the card shows one line per kind, and the metrics report
+ticket discount and voucher exposure separately. A new offer type adds one case to `costsOf()`. A merch voucher
+without a cap, or above the tenant's cap, fails the guardrails (`MERCH_OVER_CAP`) and a DB CHECK.
 
 ### 4a. Discount escalation (reviewer redirect, see README Section C #2)
 
@@ -78,7 +93,7 @@ the other consented channel.
 |---|---|---|---|---|---|
 | C-1001 + C-1006 | F-204 | propose | reminder | push | Two attempts in an hour (web, then app): high intent. Lower Bowl 88% sold, regular buyer. A discount gives away revenue we'd get anyway. One send, not two. |
 | C-1002 + C-1008 | F-511 | propose | reminder | email | First-time buyer; the guest cart is the same person (exact email match), so two attempts = real intent. Upper Deck is soft (41%), but 18 days out we nudge at full price first. If it doesn't convert in 72 h, the next run escalates to a 10% promo (§4a). Email is the only consented channel. |
-| C-1003 | F-092 | propose | merch_addon 10% | push | Lapsed (180 days), email opted out. Lower Bowl 88%: don't cut the ticket price. Add match-day merch value instead. |
+| C-1003 | F-092 | propose | merch_addon 10%, up to $10 | push | Lapsed (180 days), email opted out. Lower Bowl 88%: don't cut the ticket price. Add match-day merch value instead. |
 | C-1004 | F-333 | propose | perk (pitch-side access) | sales_task | Season-pass holder, 40 tickets, bringing a group of 6 into Club at $540. Club is 97% sold, so a discount is pure giveaway. A perk costs little, rewards the club's best fan, and the salesperson delivers it personally. |
 | C-1005 | F-777 | suppress | — | — | `MATCH_ALREADY_PLAYED`. |
 | C-1007 | F-618 | hold | — | — | `TENANT_NOT_ENABLED`: league team still onboarding; shop data not synced (data issue logged). |

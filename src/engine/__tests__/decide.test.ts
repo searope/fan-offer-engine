@@ -8,6 +8,9 @@ import { checkProposal } from "@/engine/guardrails";
 import { DEFAULT_TENANTS } from "@/engine/tenants";
 import { SAMPLE_AS_OF, SAMPLE_CARTS, SAMPLE_FAN_ACCOUNTS, type RawCartRow } from "@/engine/data/sample-carts";
 import type { Decision, EngineInput } from "@/engine/types";
+import { costTotal } from "@/engine/offers";
+
+const ticketDiscount = (d: Decision) => costTotal(d.proposal!.costs, "ticket_discount");
 
 const baseInput = (over: Partial<EngineInput> = {}): EngineInput => ({
   carts: SAMPLE_CARTS,
@@ -34,7 +37,7 @@ describe("sample carts: expected decisions (SPEC §5)", () => {
     expect(d.outcome).toBe("propose");
     expect(d.proposal?.offer).toEqual({ type: "reminder" });
     expect(d.proposal?.channel).toBe("push"); // most recent cart was App, push opted in
-    expect(d.proposal?.discountCostCents).toBe(0);
+    expect(ticketDiscount(d)).toBe(0);
     expect(d.reasonCodes).toEqual(expect.arrayContaining(["MERGED_DUPLICATE_CARTS", "HIGH_SELL_THROUGH"]));
   });
 
@@ -45,14 +48,14 @@ describe("sample carts: expected decisions (SPEC §5)", () => {
     expect(d.outcome).toBe("propose");
     expect(d.proposal?.offer).toEqual({ type: "reminder" }); // SPEC §4a: a discount is never the first touch
     expect(d.proposal?.channel).toBe("email"); // push not consented
-    expect(d.proposal?.discountCostCents).toBe(0);
+    expect(ticketDiscount(d)).toBe(0);
     expect(d.reasonCodes).toEqual(expect.arrayContaining(["GUEST_MATCHED_BY_EMAIL", "LOW_SELL_THROUGH", "NEW_FAN"]));
   });
 
   it("F-092: lapsed fan in a high-demand section gets merch add-on by push, no ticket discount", () => {
     const d = byCart(run.decisions, "C-1003");
     expect(d.outcome).toBe("propose");
-    expect(d.proposal?.offer).toEqual({ type: "merch_addon", percentOff: 10, singleUse: true });
+    expect(d.proposal?.offer).toEqual({ type: "merch_addon", percentOff: 10, maxValueCents: 1000, singleUse: true });
     expect(d.proposal?.channel).toBe("push"); // email opted out
     expect(d.reasonCodes).toEqual(expect.arrayContaining(["LAPSED_FAN", "HIGH_SELL_THROUGH"]));
   });
@@ -62,7 +65,7 @@ describe("sample carts: expected decisions (SPEC §5)", () => {
     expect(d.outcome).toBe("propose");
     expect(d.proposal?.offer).toMatchObject({ type: "perk", perkId: "pitchside-access" });
     expect(d.proposal?.channel).toBe("sales_task");
-    expect(d.proposal?.discountCostCents).toBe(0);
+    expect(ticketDiscount(d)).toBe(0);
     expect(d.reasonCodes).toContain("SEASON_PASS_HOLDER");
   });
 
@@ -121,7 +124,7 @@ describe("discount escalation: second touch only (SPEC §4a)", () => {
     expect(d.outcome).toBe("propose");
     expect(d.proposal?.offer).toEqual({ type: "promo_code", percentOff: 10, singleUse: true });
     expect(d.proposal?.channel).toBe("email");
-    expect(d.proposal?.discountCostCents).toBe(1400);
+    expect(ticketDiscount(d)).toBe(1400);
     expect(d.reasonCodes).toContain("ESCALATED_SECOND_TOUCH");
   });
 

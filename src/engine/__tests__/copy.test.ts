@@ -21,7 +21,7 @@ describe("templates always pass the linter", () => {
     { type: "reminder" },
     { type: "promo_code", percentOff: 10, singleUse: true },
     { type: "promo_code", percentOff: 15, singleUse: true },
-    { type: "merch_addon", percentOff: 10, singleUse: true },
+    { type: "merch_addon", percentOff: 10, maxValueCents: 1000, singleUse: true },
     { type: "perk", perkId: "p", label: "Pre-match pitch-side access for your group" },
   ];
   for (const offer of offers)

@@ -1,6 +1,7 @@
 import { DAY_MS, HOUR_MS, normalizeCart } from "./normalize";
 import { POLICY } from "./policy";
 import { buildReason } from "./reasons";
+import { costsOf } from "./offers";
 import type {
   Channel,
   ContactRecord,
@@ -221,7 +222,7 @@ function decideGroup(
   } else if (seasonPass && tenant.perks.length) {
     offer = { type: "perk", perkId: tenant.perks[0].perkId, label: tenant.perks[0].label };
   } else if (high && isLapsed) {
-    offer = { type: "merch_addon", percentOff: tenant.merchAddonPct, singleUse: true };
+    offer = { type: "merch_addon", percentOff: tenant.merchAddonPct, maxValueCents: tenant.merchAddonMaxCents, singleUse: true };
   } else {
     offer = { type: "reminder" };
   }
@@ -244,7 +245,6 @@ function decideGroup(
     }
   }
 
-  const discountCostCents = offer.type === "promo_code" ? Math.round((latest.cartValueCents * offer.percentOff) / 100) : 0;
   return {
     ...base,
     outcome: "propose",
@@ -254,7 +254,7 @@ function decideGroup(
       offer,
       channel,
       cartValueCents: latest.cartValueCents,
-      discountCostCents,
+      costs: costsOf(offer, latest.cartValueCents),
       expiresAt: new Date(kickoffMs - POLICY.minHoursBeforeKickoff * HOUR_MS).toISOString(),
       touchNumber,
       idempotencyKey: `${tenant.tenantId}:${TRIGGER}:${fanId}:${latest.matchId}:t${touchNumber}`,

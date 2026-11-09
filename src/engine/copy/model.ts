@@ -1,6 +1,6 @@
 import type { Channel, Offer, OfferFacts } from "../types";
 import { describeOffer } from "../reasons";
-import { LIMITS, MESSAGE_COPY_JSON_SCHEMA, PROMO_PLACEHOLDER } from "./lint";
+import { LIMITS, MESSAGE_COPY_JSON_SCHEMA, PROMO_PLACEHOLDER, voucherCapText } from "./lint";
 
 export interface CopyRequest {
   offer: Offer;
@@ -40,7 +40,10 @@ export function buildPrompt({ offer, channel, facts }: CopyRequest): string {
     hasCode
       ? `- Include the literal placeholder ${PROMO_PLACEHOLDER} exactly once where the single-use code goes. State the discount as exactly ${(offer as { percentOff: number }).percentOff}%.`
       : `- This offer has NO discount. Do not mention discounts, percentages, deals or promo codes.`,
-    `- No prices or dollar amounts. No pressure phrases ("last chance", "act now", "today only"). No invented scarcity.`,
+    offer.type === "merch_addon"
+      ? `- State the voucher's cap exactly as "up to ${voucherCapText(offer.maxValueCents)}". That is the only dollar amount allowed.`
+      : ``,
+    `- No prices or other dollar amounts. No pressure phrases ("last chance", "act now", "today only"). No invented scarcity.`,
     `- Warm, plain, sounds like the club, not a retailer. No emojis in email subjects.`,
     `Return JSON with "subject" and "body".`,
   ]

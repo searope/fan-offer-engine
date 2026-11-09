@@ -43,6 +43,8 @@ export interface TenantConfig {
   maxPromoPct: number;
   defaultPromoPct: number;
   merchAddonPct: number;
+  /** Max value of one merch voucher. Bounds its worst-case cost; enforced by guardrails. */
+  merchAddonMaxCents: number;
   /** Non-price perks the salesperson can offer top fans. First entry is the default. */
   perks: { perkId: string; label: string }[];
 }
@@ -59,7 +61,7 @@ export interface ContactRecord {
 export type Offer =
   | { type: "reminder" }
   | { type: "promo_code"; percentOff: number; singleUse: true }
-  | { type: "merch_addon"; percentOff: number; singleUse: true }
+  | { type: "merch_addon"; percentOff: number; maxValueCents: number; singleUse: true }
   | { type: "perk"; perkId: string; label: string };
 
 export type ReasonCode =
@@ -90,9 +92,10 @@ export type ReasonCode =
 export interface Proposal {
   offer: Offer;
   channel: Channel;
-  /** Revenue the cart represents vs. what the offer gives away; shown to the marketer. */
+  /** Revenue the cart represents; shown to the marketer next to the offer's costs. */
   cartValueCents: number;
-  discountCostCents: number;
+  /** What the offer gives away, one typed line per kind of cost (see offers.ts). Never summed across kinds. */
+  costs: CostLine[];
   /** Proposal can't be sent after this (kickoff minus a buffer). */
   expiresAt: string;
   /** 1 = first touch for this fan+match, 2 = escalation (SPEC §4a). Max 2. */
@@ -101,6 +104,14 @@ export interface Proposal {
   idempotencyKey: string;
   /** Facts the reason and the copy are built from. The model only ever sees these. */
   facts: OfferFacts;
+}
+
+export interface CostLine {
+  kind: "ticket_discount" | "merch_voucher" | "perk";
+  /** exact = known now; max = worst case (actual depends on what the fan buys); non_monetary = not dollars. */
+  basis: "exact" | "max" | "non_monetary";
+  amountCents: number | null;
+  label: string;
 }
 
 export interface OfferFacts {
@@ -151,6 +162,7 @@ export interface GuardrailViolation {
   code:
     | "PROMO_OVER_CAP"
     | "PROMO_NOT_SINGLE_USE"
+    | "MERCH_OVER_CAP"
     | "CHANNEL_NOT_CONSENTED"
     | "CHANNEL_OFFER_MISMATCH"
     | "TENANT_NOT_ENABLED"

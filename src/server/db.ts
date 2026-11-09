@@ -49,8 +49,10 @@ CREATE TABLE IF NOT EXISTS contact_history (
 CREATE TABLE IF NOT EXISTS promo_codes (
   code TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, fan_id TEXT NOT NULL, kind TEXT NOT NULL,
   percent_off INTEGER NOT NULL CHECK (percent_off BETWEEN 1 AND 15),
+  max_value_cents INTEGER CHECK (max_value_cents IS NULL OR max_value_cents > 0),
   max_redemptions INTEGER NOT NULL DEFAULT 1 CHECK (max_redemptions = 1),
-  idempotency_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, redeemed_at TEXT
+  idempotency_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, redeemed_at TEXT,
+  CHECK (kind <> 'merch_addon' OR max_value_cents IS NOT NULL)  -- a merch voucher is always capped
 );
 CREATE TABLE IF NOT EXISTS sales_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL, tenant_id TEXT NOT NULL, fan_id TEXT NOT NULL,
@@ -67,6 +69,11 @@ export function db(): DatabaseSync {
     const d = new DatabaseSync(path.join(DATA_DIR, "offers.db"));
     d.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     d.exec(SCHEMA);
+    // Migration for databases created before vouchers had a cap.
+    const cols = d.prepare("PRAGMA table_info(promo_codes)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "max_value_cents")) {
+      d.exec("ALTER TABLE promo_codes ADD COLUMN max_value_cents INTEGER CHECK (max_value_cents IS NULL OR max_value_cents > 0)");
+    }
     g.__offerDb = d;
   }
   return g.__offerDb;
