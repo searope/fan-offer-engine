@@ -86,6 +86,13 @@ export function ReviewQueue() {
   }, [data, hideExpired, isExpired]);
 
   if (!data) return <div className="p-10 text-slate-500">{error ?? "Loading…"}</div>;
+
+  const hideExpiredToggle = (
+    <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-slate-600" title="Expired offers can't be sent any more. Untick to see them.">
+      <input type="checkbox" className="accent-teal-700" checked={hideExpired} onChange={(e) => setHideExpired(e.target.checked)} />
+      Hide expired{expiredCount ? ` (${expiredCount})` : ""}
+    </label>
+  );
   const m = data.metrics;
 
   return (
@@ -139,14 +146,14 @@ export function ReviewQueue() {
             {label}
           </button>
         ))}
-        <label className="ml-auto flex cursor-pointer items-center gap-1.5 self-center pb-1 text-xs text-slate-600" title="Expired offers can't be sent any more. Untick to see them.">
-          <input type="checkbox" className="accent-teal-700" checked={hideExpired} onChange={(e) => setHideExpired(e.target.checked)} />
-          Hide expired{expiredCount ? ` (${expiredCount})` : ""}
-        </label>
       </nav>
 
       <main className="mt-4 space-y-4">
-        {tab === "review" && <BulkReminderBar proposals={groups.review} onChange={load} />}
+        {tab === "review" ? (
+          <BulkReminderBar proposals={groups.review} onChange={load} filter={hideExpiredToggle} />
+        ) : (
+          <div className="flex justify-end">{hideExpiredToggle}</div>
+        )}
         {groups[tab].length === 0 && (
           <p className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
             {data.lastRun ? "Nothing here." : "No runs yet. Click “Run engine on stale carts”."}
@@ -168,12 +175,13 @@ export function ReviewQueue() {
 /** Mirrors the server's bulkEligible(); the server re-checks every id anyway. */
 const bulkEligible = (p: ProposalView) => p.status === "pending_review" && p.proposal?.offer.type === "reminder" && p.proposal.channel !== "sales_task";
 
-function BulkReminderBar({ proposals, onChange }: { proposals: ProposalView[]; onChange: () => Promise<void> }) {
+function BulkReminderBar({ proposals, onChange, filter }: { proposals: ProposalView[]; onChange: () => Promise<void>; filter: React.ReactNode }) {
   const eligible = proposals.filter(bulkEligible);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ id: number; ok: boolean; error?: string }[] | null>(null);
-  if (eligible.length < 2 && !result) return null;
+  // Nothing to bulk-approve: keep the filter in the same place on its own.
+  if (eligible.length < 2 && !result) return <div className="flex justify-end">{filter}</div>;
 
   const send = async () => {
     setBusy(true);
@@ -197,18 +205,24 @@ function BulkReminderBar({ proposals, onChange }: { proposals: ProposalView[]; o
             Bulk approve: <b>{result.filter((r) => r.ok).length} sent</b>
             {result.some((r) => !r.ok) && <span className="text-red-700">, {result.filter((r) => !r.ok).length} not sent (see the cards for why)</span>}
           </span>
-          <button className="text-xs text-slate-500 underline" onClick={() => setResult(null)}>
-            Dismiss
-          </button>
+          <div className="flex items-center gap-4">
+            {filter}
+            <button className="text-xs text-slate-500 underline" onClick={() => setResult(null)}>
+              Dismiss
+            </button>
+          </div>
         </div>
       ) : !confirming ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>
             <b>{eligible.length} no-discount reminders</b> are ready. Promos, merch codes and perks are always approved one by one.
           </span>
-          <button onClick={() => setConfirming(true)} className="rounded-md border border-teal-700 bg-white px-3 py-1.5 font-semibold text-teal-800 hover:bg-teal-50">
-            Approve all reminders…
-          </button>
+          <div className="flex items-center gap-4">
+            {filter}
+            <button onClick={() => setConfirming(true)} className="rounded-md border border-teal-700 bg-white px-3 py-1.5 font-semibold text-teal-800 hover:bg-teal-50">
+              Approve all reminders…
+            </button>
+          </div>
         </div>
       ) : (
         <div>
