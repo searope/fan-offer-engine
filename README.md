@@ -54,6 +54,41 @@ data, advance the clock (to show the discount escalation), toggle fan opt-ins, a
 | `src/server/db.ts` | Schema: unique idempotency keys on outbox, contact history, promo codes; DB CHECK on 1–15% |
 | `src/components/ReviewQueue.tsx` | The marketer UI |
 
+## Where AI is used, and where it isn't
+
+**AI does one thing in this app: it writes the words of each message. Every decision is a rule.**
+
+| Step | Who decides | Why |
+|---|---|---|
+| Who's eligible, merging duplicate carts, linking a guest cart to an account | Rules | A mistake means messaging the wrong person, or a fan who opted out |
+| Offer type and discount % | Rules | It's revenue: the marketer has to be able to predict it and explain it |
+| Channel | Rules | Opt-ins, then the device the fan last used |
+| The "Why" shown to the marketer | Rules | It has to match the rule that actually fired |
+| **Message text** (email, push, sales talking points) | **Claude** | Writing is the manual work today, and wording is low-risk once checked |
+
+Claude's text is never trusted on its own. It is checked for shape, then against the rules: no discount the
+offer doesn't carry, the exact %, no prices, no invented numbers, no pressure language. A marketer reviews it
+before it sends, and a template takes over if Claude fails. The model sees the decided offer and
+non-identifying facts only: no fan ID, email or name.
+
+**To be honest about its value:** on 8 sample carts, Claude adds little, because the templates are nearly as
+good. It pays off with scale and variety:
+- **Many teams onboarding.** Each club has its own voice. Claude adapts to a team's tone without anyone
+  writing and maintaining templates per team and per offer.
+- **More context per fan.** With more facts (favourite player, matches attended), personal wording gets
+  valuable, and templates turn into combinatorial sprawl.
+- **Sales talking points.** A useful call script is hard to template. Claude's script for F-333 was clearly
+  better than the template.
+
+**Where AI could earn more, later:**
+1. **Turning marketer feedback into tuning suggestions.** Reject reasons and edits are already logged. A weekly
+   Claude summary could propose rule or prompt changes, and a person approves every rule change.
+2. **A plain-English daily digest** for the marketer: what went out, what failed, what looks unusual.
+3. **Likelihood-to-buy scoring** on the league's much larger database. This is real machine learning: it needs
+   the holdout results (B1) and an owner for the model, so it comes after the holdout is running.
+
+AI stays out of anything that decides who gets money off or who gets contacted.
+
 ---
 
 ## Section A: Written analysis
