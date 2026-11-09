@@ -56,7 +56,7 @@ in exactly one decision (`propose`, `suppress`, or `hold`), so nothing drops sil
 | Anything else, **first touch** for this match | `reminder` | none: **a discount is never the first touch** |
 | **Second touch** for this match, if §4a escalation applies | `promo_code`, single-use, **10%** default, hard cap **15%** (marketer may edit up to 15) | yes |
 
-### 4a. Discount escalation (reviewer redirect, see AI_LOG #2)
+### 4a. Discount escalation (reviewer redirect, see README Section C #2)
 
 The first draft gave F-511 a 10% promo on first touch. The review changed this: 18 days out there's time
 to try a full-price nudge first. A promo is a second touch for the same match, and only when all of these hold:
