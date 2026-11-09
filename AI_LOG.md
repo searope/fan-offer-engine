@@ -56,3 +56,13 @@ pre-review spec; the redirects below come after it.
 - **Observed:** the first live call failed with "Not logged in". The fallback path worked as designed
   (template copy, flagged on the card and in alerts).
 - **YOU:** _…_
+
+## 5. UI review (checkpoint 2)
+
+- **Asked of you:** click through the queue and redirect.
+- **What you asked for:** simpler cards for marketers, the raw export rows behind each decision, and bulk approve.
+- **AI pushback:** the agent didn't build an unrestricted "approve all". Bulk approve is limited to *no-discount
+  reminders*. It shows a confirm list of fans first, the server re-checks eligibility per id (the client list
+  isn't trusted), and each send still runs the send-time re-check. Promos, merch codes and perks stay one by
+  one. Reason: on a small, loyal fan base a wrong discount costs money and trust, and a wrong reminder costs much less.
+- **YOU (agree? change?):** _…_

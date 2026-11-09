@@ -10,7 +10,7 @@ import { draftCopy, type DraftedCopy } from "@/engine/copy/draft";
 import { lintCopy, MessageCopySchema, PROMO_PLACEHOLDER, type MessageCopy } from "@/engine/copy/lint";
 import { ClaudeAgentCopyModel, type CopyModel } from "@/engine/copy/model";
 import { templateCopy } from "@/engine/copy/templates";
-import type { Channel, ContactRecord, Decision, Offer, Proposal, ReasonCode } from "@/engine/types";
+import type { Channel, ContactRecord, Decision, Offer, Proposal, RawCartRow, ReasonCode } from "@/engine/types";
 import { DATA_DIR, db, getSetting, resetDb, setSetting, tx } from "./db";
 import { providers } from "./delivery";
 
@@ -54,6 +54,8 @@ export interface ProposalView {
   status: ProposalStatus;
   statusDetail: string | null;
   consent: { email: boolean; push: boolean } | null;
+  /** The export rows behind this decision, unmodified (production: the carts table). */
+  rawCarts: RawCartRow[];
   audit: AuditEntry[];
 }
 
@@ -116,6 +118,7 @@ function toView(r: ProposalRow): ProposalView {
     status: r.status,
     statusDetail: r.status_detail,
     consent: consentOf(r.tenant_id, r.fan_id),
+    rawCarts: SAMPLE_CARTS.filter((c) => (J(r.cart_ids_json, []) as string[]).includes(c.cartId)),
     audit,
   };
 }
@@ -397,6 +400,34 @@ export function edit(id: number, patch: z.infer<typeof EditSchema>, actor: strin
     .run(JSON.stringify(proposal), JSON.stringify(copy), copySource, new Date().toISOString(), id);
   audit(id, actor, "edited", { before, after: { proposal, copy } });
   return toView(getRow(id));
+}
+
+/**
+ * Bulk approve, deliberately narrow: only no-discount reminders by email/push that are pending review.
+ * Each one still goes through approve(), so it gets the same send-time re-check and outbox idempotency.
+ * Promos, merch codes and perks are always approved one by one.
+ */
+export function bulkEligible(p: Pick<ProposalView, "status" | "proposal">): boolean {
+  return p.status === "pending_review" && p.proposal?.offer.type === "reminder" && p.proposal.channel !== "sales_task";
+}
+
+export async function bulkApprove(ids: number[], actor: string) {
+  const results: { id: number; ok: boolean; status?: ProposalStatus; error?: string }[] = [];
+  for (const id of ids) {
+    try {
+      const r = getRow(id);
+      const v = { status: r.status, proposal: J<Proposal | null>(r.proposal_json, null) };
+      if (!bulkEligible(v)) {
+        results.push({ id, ok: false, error: "Not eligible for bulk approve (only pending no-discount reminders). Review it individually." });
+        continue;
+      }
+      const after = await approve(id, `${actor} (bulk)`);
+      results.push({ id, ok: after.status === "sent", status: after.status, error: after.status === "sent" ? undefined : (after.statusDetail ?? undefined) });
+    } catch (e) {
+      results.push({ id, ok: false, error: (e as Error).message });
+    }
+  }
+  return { results };
 }
 
 export const REJECT_REASONS = ["wrong_offer", "wrong_fan", "bad_copy", "bad_timing", "other"] as const;

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProposalView, queue as queueFn } from "@/server/service";
-import type { Channel, Offer } from "@/engine/types";
+import type { Channel, Offer, RawCartRow } from "@/engine/types";
 import { describeChannel, describeOffer } from "@/engine/reasons";
 import { PROMO_PLACEHOLDER } from "@/engine/copy/lint";
 
@@ -122,6 +122,7 @@ export function ReviewQueue() {
       </nav>
 
       <main className="mt-4 space-y-4">
+        {tab === "review" && <BulkReminderBar proposals={groups.review} onChange={load} />}
         {groups[tab].length === 0 && (
           <p className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
             {data.lastRun ? "Nothing here." : "No runs yet. Click “Run engine on stale carts”."}
@@ -139,6 +140,76 @@ export function ReviewQueue() {
 }
 
 // ---------------------------------------------------------------------------
+
+/** Mirrors the server's bulkEligible(); the server re-checks every id anyway. */
+const bulkEligible = (p: ProposalView) => p.status === "pending_review" && p.proposal?.offer.type === "reminder" && p.proposal.channel !== "sales_task";
+
+function BulkReminderBar({ proposals, onChange }: { proposals: ProposalView[]; onChange: () => Promise<void> }) {
+  const eligible = proposals.filter(bulkEligible);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ id: number; ok: boolean; error?: string }[] | null>(null);
+  if (eligible.length < 2 && !result) return null;
+
+  const send = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ results: { id: number; ok: boolean; error?: string }[] }>("/api/proposals/bulk-approve", { method: "POST", body: JSON.stringify({ ids: eligible.map((p) => p.id) }) });
+      setResult(r.results);
+      setConfirming(false);
+      await onChange();
+    } catch (e) {
+      setResult([{ id: 0, ok: false, error: (e as Error).message }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-teal-200 bg-teal-50/50 px-4 py-3 text-sm">
+      {result ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span>
+            Bulk approve: <b>{result.filter((r) => r.ok).length} sent</b>
+            {result.some((r) => !r.ok) && <span className="text-red-700">, {result.filter((r) => !r.ok).length} not sent (see the cards for why)</span>}
+          </span>
+          <button className="text-xs text-slate-500 underline" onClick={() => setResult(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : !confirming ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span>
+            <b>{eligible.length} no-discount reminders</b> are ready. Promos, merch codes and perks are always approved one by one.
+          </span>
+          <button onClick={() => setConfirming(true)} className="rounded-md border border-teal-700 bg-white px-3 py-1.5 font-semibold text-teal-800 hover:bg-teal-50">
+            Approve all reminders…
+          </button>
+        </div>
+      ) : (
+        <div>
+          <p className="font-medium">Send these {eligible.length} reminders now?</p>
+          <ul className="mt-1 list-disc pl-5 text-slate-700">
+            {eligible.map((p) => (
+              <li key={p.id}>
+                Fan {p.fanId}: {describeChannel(p.proposal!.channel)}, “{p.copy?.subject}”
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-slate-500">Each one is still re-checked (opt-ins, already contacted, expiry) right before it sends.</p>
+          <div className="mt-2 flex gap-2">
+            <button onClick={() => setConfirming(false)} className="rounded-md px-3 py-1.5 text-slate-600 hover:bg-slate-200">
+              Cancel
+            </button>
+            <button onClick={send} disabled={busy} className="rounded-md bg-teal-700 px-3 py-1.5 font-semibold text-white hover:bg-teal-800 disabled:opacity-60">
+              {busy ? "Sending…" : `Confirm: send ${eligible.length}`}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Banner({ level, message }: { level: "error" | "warn" | "info"; message: string }) {
   const cls = level === "error" ? "border-red-300 bg-red-50 text-red-800" : level === "warn" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900";
@@ -209,67 +280,65 @@ function OfferCard({ p, onChange }: { p: ProposalView; onChange: () => Promise<v
     }
   };
 
+  // Identity/merge notes move to "Source data"; the "why" keeps only the business reasons.
+  const reasons = p.reason
+    .replace(/\.$/, "")
+    .split("; ")
+    .filter((s) => !/carts for the same match were merged|guest checkout matched/i.test(s))
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1));
+
   return (
     <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-semibold">Fan {p.fanId}</span>
-          {segment && <Chip className="bg-slate-100 text-slate-700">{segment}</Chip>}
-          {p.reasonCodes.includes("MERGED_DUPLICATE_CARTS") && <Chip className="bg-indigo-50 text-indigo-700">{p.cartIds.length} carts merged</Chip>}
-          {p.reasonCodes.includes("GUEST_MATCHED_BY_EMAIL") && <Chip className="bg-indigo-50 text-indigo-700">Guest checkout linked by email</Chip>}
-          {prop.touchNumber === 2 && <Chip className="bg-orange-50 text-orange-700">2nd touch</Chip>}
-          <span className="text-xs text-slate-400">{p.cartIds.join(", ")}</span>
-        </div>
-        <Chip className={statusCls}>{statusLabel}</Chip>
-      </div>
-
-      <div className="grid gap-4 p-4 md:grid-cols-[1fr_1.1fr]">
-        {/* left: decision */}
-        <div className="space-y-3 text-sm">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-700">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <div>
+          <div className="text-base font-semibold">
+            {describeOffer(prop.offer)} <span className="font-normal text-slate-500">via</span> {describeChannel(prop.channel)}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
             <span>
-              Match in <b>{f.daysToKickoff} days</b> · {f.section} · {f.seats} seat{f.seats === 1 ? "" : "s"}
+              Fan {p.fanId}
+              {segment ? ` · ${segment}` : ""}
+            </span>
+            <span>·</span>
+            <span>
+              {f.seats} seat{f.seats === 1 ? "" : "s"}, {f.section}, match in {f.daysToKickoff} days
             </span>
             <SellThrough pct={f.sectionSoldPct} />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Chip className="bg-teal-50 text-teal-800 ring-1 ring-teal-200">{describeOffer(prop.offer)}</Chip>
-            <Chip className="bg-slate-100 text-slate-700">{describeChannel(prop.channel)}</Chip>
-            {p.consent && (
-              <span className="text-xs text-slate-500">
-                Opt-ins: email {p.consent.email ? "✓" : "✗"} · push {p.consent.push ? "✓" : "✗"}
-              </span>
-            )}
-          </div>
-          <div className="flex gap-6 text-xs text-slate-600">
-            <span>
-              Cart value <b className="text-slate-900">{money(prop.cartValueCents)}</b>
-            </span>
-            <span>
-              Discount given <b className={prop.discountCostCents ? "text-rose-700" : "text-slate-900"}>{money(prop.discountCostCents)}</b>
-            </span>
-            <span>Expires {fmtDate(prop.expiresAt)}</span>
-          </div>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Why this offer</div>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-700">
-              {p.reason
-                .replace(/\.$/, "")
-                .split("; ")
-                .map((s, i) => (
-                  <li key={i}>{s.charAt(0).toUpperCase() + s.slice(1)}</li>
-                ))}
-            </ul>
+            {prop.touchNumber === 2 && <Chip className="bg-orange-50 text-orange-700">Follow-up (2nd touch)</Chip>}
           </div>
         </div>
+        <div className="flex items-center gap-4">
+          <div className="text-right text-xs text-slate-500">
+            <div>
+              Cart <b className="text-sm text-slate-900">{money(prop.cartValueCents)}</b>
+            </div>
+            <div>
+              Discount <b className={`text-sm ${prop.discountCostCents ? "text-rose-700" : "text-slate-900"}`}>{money(prop.discountCostCents)}</b>
+            </div>
+          </div>
+          <Chip className={statusCls}>{statusLabel}</Chip>
+        </div>
+      </div>
 
-        {/* right: message */}
+      <div className="grid gap-4 p-4 md:grid-cols-[1.15fr_1fr]">
         <div>
           {mode === "edit" ? (
             <EditPanel p={p} busy={busy} onCancel={() => setMode("view")} onSave={(patch) => act(() => api(`/api/proposals/${p.id}`, { method: "PATCH", body: JSON.stringify(patch) }))} />
           ) : (
             <MessagePreview p={p} />
           )}
+        </div>
+        <div className="text-sm">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Why</div>
+          <ul className="mt-1 space-y-1 text-slate-700">
+            {reasons.map((s, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-teal-600">›</span>
+                <span>{s}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-slate-400">Send by {fmtDate(prop.expiresAt)}, or it expires.</p>
         </div>
       </div>
 
@@ -292,7 +361,10 @@ function OfferCard({ p, onChange }: { p: ProposalView; onChange: () => Promise<v
       {mode === "reject" && <RejectPanel busy={busy} onCancel={() => setMode("view")} onReject={(reason, note) => act(() => api(`/api/proposals/${p.id}/reject`, { method: "POST", body: JSON.stringify({ reason, note }) }))} />}
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/60 px-4 py-2.5">
-        <AuditTrail p={p} />
+        <div className="flex flex-wrap gap-4">
+          <SourceData p={p} />
+          <AuditTrail p={p} />
+        </div>
         {actionable && mode === "view" && (
           <div className="flex gap-2">
             <button onClick={() => setMode("reject")} disabled={busy} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-200">
@@ -477,6 +549,68 @@ function RejectPanel({ busy, onReject, onCancel }: { busy: boolean; onReject: (r
         Reject offer
       </button>
     </div>
+  );
+}
+
+const RAW_COLUMNS: [keyof RawCartRow, string][] = [
+  ["cartId", "Cart"],
+  ["fanId", "Fan ID"],
+  ["source", "Source"],
+  ["match", "Match"],
+  ["seats", "Seats"],
+  ["section", "Section"],
+  ["sectionSoldPct", "Sold %"],
+  ["cartValue", "Value"],
+  ["abandoned", "Abandoned"],
+  ["lifetimeTickets", "Lifetime tix"],
+  ["lastPurchase", "Last purchase"],
+  ["shopSpend12mo", "Shop 12 mo"],
+  ["seasonPass", "Season pass"],
+  ["emailOptIn", "Email opt-in"],
+  ["pushOptIn", "Push opt-in"],
+];
+
+/** The export rows exactly as received, so a marketer can check the engine against the data. */
+function SourceData({ p }: { p: ProposalView }) {
+  return (
+    <details className="text-xs text-slate-500">
+      <summary className="cursor-pointer select-none">
+        Source data ({p.rawCarts.length} cart{p.rawCarts.length === 1 ? "" : "s"})
+      </summary>
+      <div className="mt-2 space-y-1">
+        {p.reasonCodes.includes("MERGED_DUPLICATE_CARTS") && <p>These carts are for the same fan and match, so they were merged into one offer. The fan gets one message, not {p.rawCarts.length}.</p>}
+        {p.reasonCodes.includes("GUEST_MATCHED_BY_EMAIL") && <p>The guest checkout&apos;s email exactly matches this fan&apos;s account, so it was linked. Without an exact match it would be held, not guessed.</p>}
+        <p>Opt-ins right now: email {p.consent?.email ? "yes" : "no"}, push {p.consent?.push ? "yes" : "no"} (re-checked at send).</p>
+        <div className="max-w-full overflow-x-auto">
+          <table className="mt-1 border-collapse text-[11px]">
+            <thead>
+              <tr>
+                {RAW_COLUMNS.map(([, h]) => (
+                  <th key={h} className="border border-slate-200 bg-slate-100 px-1.5 py-1 text-left font-medium whitespace-nowrap text-slate-600">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {p.rawCarts.map((c) => (
+                <tr key={c.cartId}>
+                  {RAW_COLUMNS.map(([k]) => {
+                    const v = String(c[k] ?? "");
+                    const bad = /^(unknown|not synced)$/i.test(v);
+                    return (
+                      <td key={k} className={`border border-slate-200 px-1.5 py-1 whitespace-nowrap ${bad ? "bg-amber-50 text-amber-800" : "text-slate-700"}`}>
+                        {v}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </details>
   );
 }
 
