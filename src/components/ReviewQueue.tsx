@@ -7,7 +7,7 @@ import { describeChannel, describeOffer } from "@/engine/reasons";
 import { PROMO_PLACEHOLDER } from "@/engine/copy/lint";
 
 type QueueData = ReturnType<typeof queueFn>;
-type Tab = "review" | "sent" | "closed" | "not_actioned";
+type Tab = "review" | "sent" | "rejected" | "expired" | "not_actioned";
 
 const ACTOR = "marketer@seawolves";
 const money = (c: number) => `$${(c / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -20,6 +20,10 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) throw Object.assign(new Error(body.error ?? `HTTP ${res.status}`), { problems: (body.problems ?? []) as string[] });
   return body as T;
 }
+
+const OPEN = ["pending_review", "blocked", "failed"];
+/** Still open, but past its send-by time on the app's clock: it can't be sent any more. */
+const isLapsed = (p: ProposalView, now: string) => OPEN.includes(p.status) && !!p.proposal && Date.parse(p.proposal.expiresAt) <= Date.parse(now);
 
 // ---------------------------------------------------------------------------
 
@@ -60,39 +64,23 @@ export function ReviewQueue() {
     }
   };
 
-  const [hideExpired, setHideExpired] = useState(true);
-
-  // Expired = marked expired by a run, or still open but past its send-by time on the app's clock
-  // (a send would be refused anyway; the next run marks it expired).
-  const isExpired = useCallback(
-    (p: ProposalView) =>
-      p.status === "expired" ||
-      (["pending_review", "blocked", "failed"].includes(p.status) && !!p.proposal && !!data && Date.parse(p.proposal.expiresAt) <= Date.parse(data.now)),
-    [data],
-  );
-  const expiredCount = useMemo(() => (data?.proposals ?? []).filter(isExpired).length, [data, isExpired]);
-
   const groups = useMemo(() => {
-    const ps = (data?.proposals ?? []).filter((p) => !(hideExpired && isExpired(p)));
+    const ps = data?.proposals ?? [];
+    const lapsed = (p: ProposalView) => !!data && isLapsed(p, data.now);
     return {
-      // Most urgent first: the offer that expires soonest is the one to review next.
+      // Only offers that can still be sent; most urgent first.
       review: ps
-        .filter((p) => ["pending_review", "blocked", "failed"].includes(p.status))
+        .filter((p) => OPEN.includes(p.status) && !lapsed(p))
         .sort((a, b) => (a.proposal?.expiresAt ?? "").localeCompare(b.proposal?.expiresAt ?? "") || a.id - b.id),
       sent: ps.filter((p) => p.status === "sent" || p.status === "approved"),
-      closed: ps.filter((p) => p.status === "rejected" || p.status === "expired"),
+      rejected: ps.filter((p) => p.status === "rejected"),
+      // Marked expired by a run, or still open but past send-by on the app's clock (a send would be refused).
+      expired: ps.filter((p) => p.status === "expired" || (OPEN.includes(p.status) && lapsed(p))),
       not_actioned: ps.filter((p) => p.status === "held" || p.status === "suppressed"),
     };
-  }, [data, hideExpired, isExpired]);
+  }, [data]);
 
   if (!data) return <div className="p-10 text-slate-500">{error ?? "Loading…"}</div>;
-
-  const hideExpiredToggle = (
-    <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-slate-600" title="Expired offers can't be sent any more. Untick to see them.">
-      <input type="checkbox" className="accent-teal-700" checked={hideExpired} onChange={(e) => setHideExpired(e.target.checked)} />
-      Hide expired{expiredCount ? ` (${expiredCount})` : ""}
-    </label>
-  );
   const m = data.metrics;
 
   return (
@@ -119,7 +107,7 @@ export function ReviewQueue() {
       </div>
 
       <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
-        <Kpi label="Needs review" value={String(m.counts.pending + m.counts.blocked + m.counts.failed)} />
+        <Kpi label="Needs review" value={String(groups.review.length)} />
         <Kpi label="Sent" value={String(m.counts.sent)} />
         <Kpi label="Cart value reached" value={money(m.revenueAtStakeCents)} hint="Value of carts behind sent offers" />
         <Kpi label="Ticket discount committed" value={money(m.ticketDiscountCommittedCents)} hint="Ticket revenue given away if every sent ticket code is used" />
@@ -138,7 +126,8 @@ export function ReviewQueue() {
           [
             ["review", `Needs review (${groups.review.length})`],
             ["sent", `Sent (${groups.sent.length})`],
-            ["closed", `Rejected / expired (${groups.closed.length})`],
+            ["rejected", `Rejected (${groups.rejected.length})`],
+            ["expired", `Expired (${groups.expired.length})`],
             ["not_actioned", `No offer (${groups.not_actioned.length})`],
           ] as [Tab, string][]
         ).map(([k, label]) => (
@@ -149,11 +138,7 @@ export function ReviewQueue() {
       </nav>
 
       <main className="mt-4 space-y-4">
-        {tab === "review" ? (
-          <BulkReminderBar proposals={groups.review} onChange={load} filter={hideExpiredToggle} />
-        ) : (
-          <div className="flex justify-end">{hideExpiredToggle}</div>
-        )}
+        {tab === "review" && <BulkReminderBar proposals={groups.review} onChange={load} />}
         {groups[tab].length === 0 && (
           <p className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
             {data.lastRun ? "Nothing here." : "No runs yet. Click “Run engine on stale carts”."}
@@ -175,13 +160,12 @@ export function ReviewQueue() {
 /** Mirrors the server's bulkEligible(); the server re-checks every id anyway. */
 const bulkEligible = (p: ProposalView) => p.status === "pending_review" && p.proposal?.offer.type === "reminder" && p.proposal.channel !== "sales_task";
 
-function BulkReminderBar({ proposals, onChange, filter }: { proposals: ProposalView[]; onChange: () => Promise<void>; filter: React.ReactNode }) {
+function BulkReminderBar({ proposals, onChange }: { proposals: ProposalView[]; onChange: () => Promise<void> }) {
   const eligible = proposals.filter(bulkEligible);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ id: number; ok: boolean; error?: string }[] | null>(null);
-  // Nothing to bulk-approve: keep the filter in the same place on its own.
-  if (eligible.length < 2 && !result) return <div className="flex justify-end">{filter}</div>;
+  if (eligible.length < 2 && !result) return null;
 
   const send = async () => {
     setBusy(true);
@@ -205,24 +189,18 @@ function BulkReminderBar({ proposals, onChange, filter }: { proposals: ProposalV
             Bulk approve: <b>{result.filter((r) => r.ok).length} sent</b>
             {result.some((r) => !r.ok) && <span className="text-red-700">, {result.filter((r) => !r.ok).length} not sent (see the cards for why)</span>}
           </span>
-          <div className="flex items-center gap-4">
-            {filter}
-            <button className="text-xs text-slate-500 underline" onClick={() => setResult(null)}>
-              Dismiss
-            </button>
-          </div>
+          <button className="text-xs text-slate-500 underline" onClick={() => setResult(null)}>
+            Dismiss
+          </button>
         </div>
       ) : !confirming ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>
             <b>{eligible.length} no-discount reminders</b> are ready. Promos, merch codes and perks are always approved one by one.
           </span>
-          <div className="flex items-center gap-4">
-            {filter}
-            <button onClick={() => setConfirming(true)} className="rounded-md border border-teal-700 bg-white px-3 py-1.5 font-semibold text-teal-800 hover:bg-teal-50">
-              Approve all reminders…
-            </button>
-          </div>
+          <button onClick={() => setConfirming(true)} className="rounded-md border border-teal-700 bg-white px-3 py-1.5 font-semibold text-teal-800 hover:bg-teal-50">
+            Approve all reminders…
+          </button>
         </div>
       ) : (
         <div>
@@ -345,8 +323,9 @@ function OfferCard({ p, onChange, now }: { p: ProposalView; onChange: () => Prom
   const prop = p.proposal!;
   const f = prop.facts;
   const segment = p.reasonCodes.map((c) => SEGMENTS[c]).find(Boolean);
-  const [statusLabel, statusCls] = STATUS[p.status];
-  const actionable = ["pending_review", "blocked", "failed"].includes(p.status);
+  const lapsed = isLapsed(p, now);
+  const [statusLabel, statusCls] = STATUS[lapsed ? "expired" : p.status];
+  const actionable = OPEN.includes(p.status) && !lapsed;
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
