@@ -35,9 +35,12 @@ const MONEY = /\$\s?\d/;
  * Deterministic checks on copy, whether a model, a template, or a marketer wrote it.
  * Returns human-readable problems; empty = OK.
  */
+/** List markers ("1. ", "2) ") are formatting, not facts; strip them before checking numbers. */
+const stripListMarkers = (s: string) => s.replace(/^\s*\d{1,2}[.)]\s+/gm, "");
+
 export function lintCopy(copy: MessageCopy, offer: Offer, channel: Channel, facts: OfferFacts): string[] {
   const p: string[] = [];
-  const text = `${copy.subject}\n${copy.body}`;
+  const text = stripListMarkers(`${copy.subject}\n${copy.body}`);
   const lim = LIMITS[channel];
   if (copy.subject.length > lim.subject) p.push(`Subject is ${copy.subject.length} chars (max ${lim.subject} for ${channel}).`);
   if (copy.body.length > lim.body) p.push(`Body is ${copy.body.length} chars (max ${lim.body} for ${channel}).`);

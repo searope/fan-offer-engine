@@ -13,7 +13,7 @@ for copy, Vitest. No CRM: delivery goes through a transactional email provider a
 ```powershell
 npm install
 npm run dev        # http://localhost:3000, then click "Run engine on stale carts"
-npm test           # 49 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
+npm test           # 50 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
 ```
 
 Claude-written copy (optional; without it the app uses safe templates and says so on each card):
@@ -145,7 +145,11 @@ on first touch, with a promo only as a second touch after an unconverted reminde
 **3. Agent self-corrections while running its own code.** The linter rejected the agent's own sales-task
 template, so lint became channel-aware and perks are locked to the sales channel. End-to-end testing showed
 consent was read from the export snapshot, so live consent now gates proposals too. Blocked or failed offers
-past kickoff now expire. **Me (did I verify / reject anything):** _…_
+past kickoff now expire. After login, the first live Claude run drafted 3 of 4 messages that passed. The 4th
+(F-333's sales talking points) was rejected because the "no invented numbers" rule read Claude's list
+numbering ("1.", "2.") as made-up facts. That was a linter false positive, not a model error. List markers
+are now stripped first, and a test keeps a real scarcity claim ("only 3 seats left") failing; the re-run
+gave 4 of 4. **Me (did I verify / reject anything):** _…_
 
 **4. Model choice.** *Asked:* use "Claude Code, this session" as the model. *AI gave:* pushback, since a
 running engine can't call back into a chat. It proposed the Claude Agent SDK behind a `CopyModel` interface

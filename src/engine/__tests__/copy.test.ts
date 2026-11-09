@@ -44,6 +44,13 @@ describe("linter catches what a model gets wrong", () => {
     expect(lintCopy({ subject: "15% off", body: `Use ${PROMO_PLACEHOLDER}` }, { type: "promo_code", percentOff: 10, singleUse: true }, "email", f).join()).toMatch(/10%/));
   it("invented scarcity numbers", () =>
     expect(lintCopy({ subject: "Hurry", body: "Only 3 seats left in your section!" }, { type: "reminder" }, "push", f).join()).toMatch(/not in the facts/));
+  it("numbered talking points are not invented facts (live Claude false positive), but a scarcity claim inside one still is", () => {
+    const perk = proposals.find((d) => d.proposal!.offer.type === "perk")!.proposal!;
+    const ok = { subject: "Call about 6 Club seats", body: "1. Thank them for 40 tickets.\n2. Offer pitch-side access.\n3. Help finish checkout." };
+    expect(lintCopy(ok, perk.offer, "sales_task", perk.facts)).toEqual([]);
+    const bad = { subject: "Call about 6 Club seats", body: "1. Tell them only 3 Club seats are left." };
+    expect(lintCopy(bad, perk.offer, "sales_task", perk.facts).join()).toMatch(/not in the facts: 3/);
+  });
   it("pressure language", () =>
     expect(lintCopy({ subject: "Last chance", body: "Your seats are in your cart." }, { type: "reminder" }, "email", f).join()).toMatch(/pressure/));
   it("a literal code instead of the placeholder", () =>
