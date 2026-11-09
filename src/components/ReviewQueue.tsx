@@ -63,7 +63,10 @@ export function ReviewQueue() {
   const groups = useMemo(() => {
     const ps = data?.proposals ?? [];
     return {
-      review: ps.filter((p) => ["pending_review", "blocked", "failed"].includes(p.status)),
+      // Most urgent first: the offer that expires soonest is the one to review next.
+      review: ps
+        .filter((p) => ["pending_review", "blocked", "failed"].includes(p.status))
+        .sort((a, b) => (a.proposal?.expiresAt ?? "").localeCompare(b.proposal?.expiresAt ?? "") || a.id - b.id),
       sent: ps.filter((p) => p.status === "sent" || p.status === "approved"),
       closed: ps.filter((p) => p.status === "rejected" || p.status === "expired"),
       not_actioned: ps.filter((p) => p.status === "held" || p.status === "suppressed"),
@@ -291,9 +294,9 @@ function SendBy({ expiresAt, now }: { expiresAt: string; now: string }) {
   const ms = Date.parse(expiresAt) - Date.parse(now);
   const h = Math.floor(ms / 3_600_000);
   const left = ms <= 0 ? "expired" : h >= 48 ? `${Math.floor(h / 24)} days left` : h >= 1 ? `${h} h left` : "under 1 h left";
-  const cls = ms <= 0 || h < 24 ? "border-red-300 bg-red-50 text-red-800" : h < 48 ? "border-amber-300 bg-amber-50 text-amber-900" : "border-slate-300 bg-white text-slate-700";
+  const cls = ms <= 0 || h < 24 ? "border-red-200 bg-red-50 text-red-800" : h < 48 ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700";
   return (
-    <div className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${cls}`} title="After this the offer can't be sent: it's too close to kickoff.">
+    <div className={`flex items-center gap-1.5 border-b px-4 py-1.5 text-sm ${cls}`} title="After this the offer can't be sent: it's too close to kickoff.">
       <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
         <circle cx="8" cy="8" r="6.2" />
         <path d="M8 4.5V8l2.4 1.6" strokeLinecap="round" />
@@ -338,6 +341,7 @@ function OfferCard({ p, onChange, now }: { p: ProposalView; onChange: () => Prom
 
   return (
     <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      {actionable && <SendBy expiresAt={prop.expiresAt} now={now} />}
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div>
           <div className="text-base font-semibold">
@@ -373,11 +377,6 @@ function OfferCard({ p, onChange, now }: { p: ProposalView; onChange: () => Prom
             <EditPanel p={p} busy={busy} onCancel={() => setMode("view")} onSave={(patch) => act(() => api(`/api/proposals/${p.id}`, { method: "PATCH", body: JSON.stringify(patch) }))} />
           ) : (
             <MessagePreview p={p} />
-          )}
-          {actionable && (
-            <div className="mt-2">
-              <SendBy expiresAt={prop.expiresAt} now={now} />
-            </div>
           )}
         </div>
         <div className="text-sm">
