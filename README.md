@@ -17,6 +17,7 @@ for copy, Vitest. No CRM: delivery goes through a transactional email provider a
 npm install
 npm run dev        # http://localhost:3000, then click "Run engine on stale carts"
 npm test           # 62 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
+npm run typecheck  # generates Next route types first, then runs tsc
 ```
 
 ### Claude-written copy: template messages are the expected default
