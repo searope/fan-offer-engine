@@ -1,5 +1,8 @@
 # Fan Offer Engine: cart win-back (trigger #1)
 
+**Repository:** https://github.com/searope/fan-offer-engine (full commit history, including the spec before
+and after review).
+
 A proof of concept for the Seattle Seawolves. It processes stale ticket carts, decides which fans are worth a
 win-back offer, and picks the offer, channel and reason. Claude drafts the message, and every offer waits in
 a review queue where a marketer approves, edits or rejects it. **Nothing reaches a fan without approval.**
