@@ -168,8 +168,12 @@ channel; a per-team kill switch (`offersEnabled`) and a per-team daily discount 
 
 ### B2. Where an AI coding assistant would be plausibly wrong (written without AI)
 
-> **To be written by me, without AI assistance, as the brief requires.**
-> _…scenario, what the incorrect output would look like, and what I'd check before acting on it…_
+**The consent bug:** the engine read opt-ins from a stale export snapshot. It passed all the tests and only showed up when the app ran end to end.
+The AI did a good job implementing the app. I've tried to mess with the discounts and promos but I quicly realized that it's not my department. 
+I've checked the generated rules to make sense. But mostly I've concentrated on the usability of the UI and small errors in it.
+**Expired tab:** initially the tab was Rejected/Expired and it wasn't filled. 
+**Expired reminders:** They were shown anyway. Now they are filtered out to Expired tab.
+**Discout::** initially it was confusing what it's supposed to show. Now it's a generic to handle both price and merch discounts, and seats upgrates. And whaterver else the marketing will come up with.
 
 ---
 
@@ -178,40 +182,35 @@ channel; a per-team kill switch (`offersEnabled`) and a per-team daily discount 
 Claude Code (Opus 5.5, desktop app) was the coding agent. The git history shows the sequence: `ecc9c13` is
 the spec and tests *before* review, and `33232cd` contains my redirects. Lines marked **Me** are mine.
 
-**1. Scoping.** *Asked:* build the engine from the challenge text. *AI gave:* three questions before any code
-(missing README sections, which model, how to pace review). *Changed:* rather than let it guess the README
-sections, I pointed it at the full challenge page, which showed B2 must be written without AI.
-**Me:** _…_
-
-**2. Agent task: spec and tests first, then my review (main redirect).** *Asked:* write the per-cart decisions
+**1. Agent task: spec and tests first, then my review (main redirect).** *Asked:* write the per-cart decisions
 as a spec plus tests, and stop before building. *Guardrails:* `SPEC.md` is the contract; the tests encode every
 per-cart decision plus invariants on generated carts (each cart decided once, one proposal per fan, consent,
 15% cap, tenant enabled, determinism); the engine has to pass them, and tests are not edited to fit the code.
 *AI gave:* F-511 a 10% promo on first touch, and F-333 a bare sales handoff. *Changed:* F-511 gets no discount
 on first touch, with a promo only as a second touch after an unconverted reminder in a still-soft section
 (SPEC §4a, five new tests); F-333 gets a non-price perk via the salesperson. *Kept:* F-092's merch add-on.
-**Me (why):** _…_
+**Me (why):** it wasn't right idea to be honest. The staff shoule be dealt with by the marketing.
 
-**3. Agent self-corrections while running its own code.** The linter rejected the agent's own sales-task
-template, so lint became channel-aware and perks are locked to the sales channel. End-to-end testing showed
-consent was read from the export snapshot, so live consent now gates proposals too. Blocked or failed offers
-past kickoff now expire. After login, the first live Claude run drafted 3 of 4 messages that passed. The 4th
-(F-333's sales talking points) was rejected because the "no invented numbers" rule read Claude's list
-numbering ("1.", "2.") as made-up facts. That was a linter false positive, not a model error. List markers
-are now stripped first, and a test keeps a real scarcity claim ("only 3 seats left") failing; the re-run
-gave 4 of 4. **Me (did I verify / reject anything):** _…_
-
-**4. Model choice.** *Asked:* use "Claude Code, this session" as the model. *AI gave:* pushback, since a
+**2. Model choice.** *Asked:* use "Claude Code, this session" as the model. *AI gave:* pushback, since a
 running engine can't call back into a chat. It proposed the Claude Agent SDK behind a `CopyModel` interface
 (Anthropic API in production). The first live call failed with "Not logged in", and the template fallback
-worked as designed. **Me:** _…_
+worked as designed. **Me:** worked with the AI to figure out how to use my Claude Code subscrtiption instead with the option to use Anthropic API in an enterprise setting.
 
-**5. UI review.** *Asked for:* simpler marketer cards, raw export data per card, and bulk approve. *AI pushed
+**3. UI review.** *Asked for:* simpler marketer cards, raw export data per card, and bulk approve. *AI pushed
 back on bulk approve:* it built a version limited to no-discount reminders, with a confirm list and a per-id
-server re-check; discounts and perks stay one by one. **Me (agree / change):** _…_
+server re-check; discounts and perks stay one by one. **Me (agree / change):** Made muliple fixes/tweaks to make UI easier to use.
 
-**6. "Discount $0" on a merch voucher.** F-092's card offered a 10% merch voucher but showed "Discount $0":
-the field only counted ticket revenue, so the voucher's cost was invisible and had no upper bound. *AI gave:* a
-design with typed cost lines per offer type and a per-team voucher cap. *Changed:* cards show one line per kind
-of cost, metrics keep ticket discount and voucher exposure apart, the voucher is capped ($10 for the Seawolves)
-and the fan is told the cap. **Me (how I spotted it, why it matters):** _…_
+**4. "Discount $0" on a merch voucher.** *Found:* the AI pointed me to F-092's card, which offered a 10% merch
+voucher but showed "Discount $0". The field only counted ticket revenue, so the voucher's cost was invisible and
+had no upper bound. *Asked:* is "discount" about everything or just the ticket sale; should merch get its own
+line; what happens when more offer types are added? *AI gave:* typed cost lines per offer type and a per-team
+voucher cap, rather than a one-off merch field. *Changed (`9577eff`):* cards show one line per kind of cost,
+metrics keep ticket discount and voucher exposure apart, the voucher is capped ($10 for the Seawolves) and the
+fan is told the cap. **Me:** requested to clarify the meaning of the field and handle other discount cases.
+
+**5. "Hide expired" filter → separate Rejected and Expired tabs.** *Asked:* an option to hide expired offers,
+on by default, then moved next to "Approve all reminders". *AI gave:* a checkbox filter (`24f3662`, `f8751d7`).
+*Changed (`c213a0a`):* the filter hid expired offers inside a tab named "Rejected / expired", which made no
+sense. I replaced it with separate Rejected and Expired tabs and removed the checkbox. "Needs review" now shows
+only offers that can still be sent, and anything past its send-by time moves straight to Expired, read-only.
+**Me:** requiested to change the UI to move the expired riminder cards to Expired tab and sort the current ones in the order of expiration.
