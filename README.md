@@ -189,16 +189,16 @@ per-cart decision plus invariants on generated carts (each cart decided once, on
 *AI gave:* F-511 a 10% promo on first touch, and F-333 a bare sales handoff. *Changed:* F-511 gets no discount
 on first touch, with a promo only as a second touch after an unconverted reminder in a still-soft section
 (SPEC §4a, five new tests); F-333 gets a non-price perk via the salesperson. *Kept:* F-092's merch add-on.
-**Me (why):** it wasn't right idea to be honest. The staff shoule be dealt with by the marketing.
+**Me (why):** it wasn't right idea to be honest. The staff should be dealt with by the marketing.
 
 **2. Model choice.** *Asked:* use "Claude Code, this session" as the model. *AI gave:* pushback, since a
 running engine can't call back into a chat. It proposed the Claude Agent SDK behind a `CopyModel` interface
 (Anthropic API in production). The first live call failed with "Not logged in", and the template fallback
-worked as designed. **Me:** worked with the AI to figure out how to use my Claude Code subscrtiption instead with the option to use Anthropic API in an enterprise setting.
+worked as designed. **Me:** worked with the AI to figure out how to use my Claude Code subscription instead with the option to use Anthropic API in an enterprise setting.
 
 **3. UI review.** *Asked for:* simpler marketer cards, raw export data per card, and bulk approve. *AI pushed
 back on bulk approve:* it built a version limited to no-discount reminders, with a confirm list and a per-id
-server re-check; discounts and perks stay one by one. **Me (agree / change):** Made muliple fixes/tweaks to make UI easier to use.
+server re-check; discounts and perks stay one by one. **Me (agree / change):** Made multiple fixes/tweaks to make UI easier to use.
 
 **4. "Discount $0" on a merch voucher.** *Found:* the AI pointed me to F-092's card, which offered a 10% merch
 voucher but showed "Discount $0". The field only counted ticket revenue, so the voucher's cost was invisible and
@@ -213,4 +213,4 @@ on by default, then moved next to "Approve all reminders". *AI gave:* a checkbox
 *Changed (`c213a0a`):* the filter hid expired offers inside a tab named "Rejected / expired", which made no
 sense. I replaced it with separate Rejected and Expired tabs and removed the checkbox. "Needs review" now shows
 only offers that can still be sent, and anything past its send-by time moves straight to Expired, read-only.
-**Me:** requiested to change the UI to move the expired riminder cards to Expired tab and sort the current ones in the order of expiration.
+**Me:** requested to change the UI to move the expired reminder cards to Expired tab and sort the current ones in the order of expiration.
