@@ -30,11 +30,14 @@ const byCart = (decisions: Decision[], cartId: string) => {
 describe("sample carts: expected decisions (SPEC §5)", () => {
   const run = decide(baseInput());
 
-  it("F-204: merges C-1001 + C-1006 into one push reminder, no discount", () => {
+  it("F-204: merges C-1001 + C-1006 into one push reminder, no discount, and lands in the holdout", () => {
     const d = byCart(run.decisions, "C-1001");
     expect(d.cartIds.sort()).toEqual(["C-1001", "C-1006"]);
     expect(d.fanId).toBe("F-204");
-    expect(d.outcome).toBe("propose");
+    // SPEC §4c: F-204 x this match hashes into the 15% holdout. The offer is still decided (what they would
+    // have got) but never sent, so offers can be measured against doing nothing.
+    expect(d.outcome).toBe("holdout");
+    expect(d.reasonCodes).toContain("HOLDOUT");
     expect(d.proposal?.offer).toEqual({ type: "reminder" });
     expect(d.proposal?.channel).toBe("push"); // most recent cart was App, push opted in
     expect(ticketDiscount(d)).toBe(0);
@@ -85,9 +88,9 @@ describe("sample carts: expected decisions (SPEC §5)", () => {
     );
   });
 
-  it("produces exactly 4 proposals, 1 suppression, 1 hold", () => {
+  it("produces 3 proposals, 1 holdout, 1 suppression, 1 hold", () => {
     const count = (o: Decision["outcome"]) => run.decisions.filter((d) => d.outcome === o).length;
-    expect([count("propose"), count("suppress"), count("hold")]).toEqual([4, 1, 1]);
+    expect([count("propose"), count("holdout"), count("suppress"), count("hold")]).toEqual([3, 1, 1, 1]);
   });
 
   it("every decision has a non-empty marketer-readable reason", () => {
@@ -274,4 +277,51 @@ describe("invariants on generated carts (SPEC §6)", () => {
       expect(decide(baseInput({ carts, fanAccounts: accounts }))).toEqual(run);
     });
   }
+});
+
+describe("holdout (SPEC §4c)", () => {
+  const withPct = (holdoutPct: number) => DEFAULT_TENANTS.map((t) => ({ ...t, holdoutPct }));
+
+  it("is deterministic per fan x match: the same fan stays held out on every run", () => {
+    const a = byCart(decide(baseInput()).decisions, "C-1001");
+    const b = byCart(decide(baseInput({ asOf: "2026-11-09T15:00:00-08:00", exportedAt: SAMPLE_AS_OF })).decisions, "C-1001");
+    expect([a.outcome, b.outcome]).toEqual(["holdout", "holdout"]);
+  });
+
+  it("at 0% nobody is held out, and F-204 gets its push reminder", () => {
+    const run = decide(baseInput({ tenants: withPct(0) }));
+    expect(run.decisions.some((d) => d.outcome === "holdout")).toBe(false);
+    expect(byCart(run.decisions, "C-1001").outcome).toBe("propose");
+  });
+
+  it("season-pass perks are never held out, even at 100%", () => {
+    const run = decide(baseInput({ tenants: withPct(100) }));
+    expect(byCart(run.decisions, "C-1004").outcome).toBe("propose");
+    expect(byCart(run.decisions, "C-1003").outcome).toBe("holdout");
+  });
+
+  it("only first touches are held out: a follow-up after a sent reminder still goes ahead", () => {
+    const first = byCart(decide(baseInput()).decisions, "C-1002");
+    const contactHistory = [
+      { tenantId: "seawolves", fanId: "F-511", matchId: first.matchId, channel: "email" as const, offerType: "reminder" as const, sentAt: "2026-11-05T10:00:00-08:00" },
+    ];
+    const d = byCart(decide(baseInput({ contactHistory, tenants: withPct(100) })).decisions, "C-1002");
+    expect(d.outcome).toBe("propose");
+    expect(d.proposal?.offer.type).toBe("promo_code");
+  });
+
+  it("a held-out decision keeps the offer it would have sent, and says so", () => {
+    const d = byCart(decide(baseInput()).decisions, "C-1001");
+    expect(d.proposal?.offer).toEqual({ type: "reminder" });
+    expect(d.reason).toMatch(/held out/i);
+  });
+
+  it("roughly matches the configured share over many fans", () => {
+    const carts = Array.from({ length: 400 }, (_, i) => ({ ...SAMPLE_CARTS[1], cartId: `H-${i}`, fanId: `F-${1000 + i}` }));
+    const accounts = carts.map((c) => ({ fanId: c.fanId, email: `${c.fanId}@example.com` }));
+    const run = decide(baseInput({ carts, fanAccounts: accounts }));
+    const share = run.decisions.filter((d) => d.outcome === "holdout").length / run.decisions.length;
+    expect(share).toBeGreaterThan(0.1);
+    expect(share).toBeLessThan(0.2);
+  });
 });

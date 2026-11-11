@@ -27,7 +27,7 @@ function copyModel(): CopyModel | null {
 }
 
 // ---------- views ----------
-export type ProposalStatus = "pending_review" | "approved" | "sent" | "failed" | "blocked" | "rejected" | "expired" | "held" | "suppressed";
+export type ProposalStatus = "pending_review" | "approved" | "sent" | "failed" | "blocked" | "rejected" | "expired" | "held" | "suppressed" | "holdout";
 
 export interface AuditEntry {
   at: string;
@@ -266,8 +266,21 @@ export async function runEngine(actor: string, opts: { overrideReason?: string }
 
   // Held / suppressed are informational: the latest run replaces them.
   db().exec("DELETE FROM proposals WHERE status IN ('held','suppressed')");
-  for (const d of run.decisions.filter((x) => x.outcome !== "propose")) {
+  for (const d of run.decisions.filter((x) => x.outcome === "hold" || x.outcome === "suppress")) {
     insert.run(runId, d.key, d.tenantId, d.fanId, d.matchId, JSON.stringify(d.cartIds), d.outcome, JSON.stringify(d.reasonCodes), d.reason, null, null, null, null, null, null, d.outcome === "hold" ? "held" : "suppressed", null, null, ts, ts);
+  }
+
+  // Holdouts are kept (they are the measurement), never sent, and never get copy drafted.
+  // The idempotency key keeps one row per fan x match x touch across runs.
+  let newHoldouts = 0;
+  for (const d of run.decisions.filter((x) => x.outcome === "holdout")) {
+    if (db().prepare("SELECT id FROM proposals WHERE idempotency_key = ?").get(d.proposal!.idempotencyKey)) continue;
+    const id = Number(
+      insert.run(runId, d.key, d.tenantId, d.fanId, d.matchId, JSON.stringify(d.cartIds), d.outcome, JSON.stringify(d.reasonCodes), d.reason,
+        JSON.stringify(d.proposal), null, null, null, null, null, "holdout", null, d.proposal!.idempotencyKey, ts, ts).lastInsertRowid,
+    );
+    audit(id, "engine", "held_out", { runId });
+    newHoldouts++;
   }
 
   const fresh: Decision[] = [];
@@ -305,6 +318,8 @@ export async function runEngine(actor: string, opts: { overrideReason?: string }
     alreadyQueued,
     suppressed: count("suppress"),
     held: count("hold"),
+    holdout: count("holdout"),
+    newHoldouts,
     dataIssues: run.dataIssues,
     copyFromModel: drafts.filter((d) => d.source === "model").length,
     copyFallbacks: drafts.filter((d) => d.source === "template").map((d) => d.fallbackReason),
@@ -327,6 +342,7 @@ export async function approve(id: number, actor: string) {
 
   // Send-time re-check against *current* consent, contact history, clock, and guardrails.
   const problems = problemsFor(r, proposal, copy);
+  if (completedAt(r.tenant_id, r.fan_id, r.match_id)) problems.push("The fan has already completed this purchase. No win-back needed.");
   if (problems.length) {
     setStatus(id, "blocked", problems.join(" "));
     audit(id, actor, "blocked_at_send", { problems });
@@ -503,7 +519,8 @@ export function queue() {
 
 function metrics(ps: ProposalView[]) {
   const by = (s: ProposalStatus) => ps.filter((p) => p.status === s).length;
-  const offers = ps.filter((p) => p.proposal);
+  // Offers a marketer works on (holdouts have a decided offer but are never sent or drafted).
+  const offers = ps.filter((p) => p.proposal && p.status !== "holdout");
   const decided = offers.filter((p) => ["sent", "approved", "failed", "rejected"].includes(p.status));
   const edited = offers.filter((p) => p.audit.some((a) => a.action === "edited"));
   const sent = offers.filter((p) => p.status === "sent");
@@ -527,7 +544,9 @@ function metrics(ps: ProposalView[]) {
       expired: by("expired"),
       held: by("held"),
       suppressed: by("suppressed"),
+      holdout: by("holdout"),
     },
+    measurement: measure(ps),
     approvalRate: decided.length ? (decided.length - by("rejected")) / decided.length : null,
     editRate: decided.length ? edited.filter((p) => decided.includes(p)).length / decided.length : null,
     revenueAtStakeCents: sent.reduce((s, p) => s + (p.proposal?.cartValueCents ?? 0), 0),
@@ -537,6 +556,48 @@ function metrics(ps: ProposalView[]) {
     perksPromised: sent.filter((p) => p.proposal?.costs.some((c) => c.kind === "perk")).length,
     modelCopyShare: offers.length ? offers.filter((p) => p.copySource === "model").length / offers.length : null,
     alerts,
+  };
+}
+
+// ---------- measurement (SPEC §4c) ----------
+function completedAt(tenantId: string | null, fanId: string | null, matchId: string): string | null {
+  if (!tenantId || !fanId) return null;
+  const r = db().prepare("SELECT completed_at FROM cart_completions WHERE tenant_id = ? AND fan_id = ? AND match_id = ?").get(tenantId, fanId, matchId) as
+    | { completed_at: string }
+    | undefined;
+  return r?.completed_at ?? null;
+}
+
+/** Below this many decisions per group, the difference is noise; the UI says so. */
+const MIN_PER_GROUP = 30;
+const WINDOW_DAYS = 7;
+
+/**
+ * Offered vs held out, compared on cart completion within 7 days of the decision.
+ * "Offered" is everyone eligible who wasn't held out, whatever the marketer then did (intention to treat):
+ * comparing only *sent* offers would let the marketer's choices bias the result.
+ * Perks are excluded on both sides because they are never held out.
+ */
+function measure(ps: ProposalView[]) {
+  const runAsOf = new Map((db().prepare("SELECT id, as_of FROM runs").all() as { id: number; as_of: string }[]).map((r) => [r.id, Date.parse(r.as_of)]));
+  const group = { offered: { n: 0, converted: 0 }, holdout: { n: 0, converted: 0 } };
+  for (const p of ps) {
+    if (!p.proposal || p.proposal.touchNumber !== 1 || p.proposal.offer.type === "perk") continue;
+    const g = p.status === "holdout" ? group.holdout : group.offered;
+    g.n++;
+    const done = completedAt(p.tenantId, p.fanId, p.matchId);
+    const decidedAt = runAsOf.get(p.runId) ?? 0;
+    if (done && Date.parse(done) >= decidedAt && Date.parse(done) - decidedAt <= WINDOW_DAYS * 86_400_000) g.converted++;
+  }
+  const rate = (g: { n: number; converted: number }) => (g.n ? g.converted / g.n : null);
+  const ro = rate(group.offered);
+  const rh = rate(group.holdout);
+  return {
+    ...group,
+    windowDays: WINDOW_DAYS,
+    minPerGroup: MIN_PER_GROUP,
+    liftPts: ro !== null && rh !== null ? Math.round((ro - rh) * 100) : null,
+    enoughData: group.offered.n >= MIN_PER_GROUP && group.holdout.n >= MIN_PER_GROUP,
   };
 }
 
@@ -554,6 +615,16 @@ export function advanceClock(days: number) {
 export function setConsent(fanId: string, channel: "email" | "push", value: boolean, actor: string) {
   db().prepare(`UPDATE fans SET ${channel === "email" ? "email_opt_in" : "push_opt_in"} = ?, updated_at = ? WHERE fan_id = ?`).run(value ? 1 : 0, new Date().toISOString(), fanId);
   audit(null, actor, "consent_changed", { fanId, channel, value });
+}
+
+/** Demo stand-in for a ticketing "order completed" event: the fan bought their latest decided match. */
+export function completeCart(fanId: string, actor: string) {
+  const r = db().prepare("SELECT tenant_id, match_id FROM proposals WHERE fan_id = ? AND proposal_json IS NOT NULL ORDER BY id DESC LIMIT 1").get(fanId) as
+    | { tenant_id: string; match_id: string }
+    | undefined;
+  if (!r) throw new HttpError(404, `No decided offer for ${fanId}`);
+  db().prepare("INSERT OR IGNORE INTO cart_completions(tenant_id, fan_id, match_id, completed_at) VALUES(?,?,?,?)").run(r.tenant_id, fanId, r.match_id, now());
+  audit(null, actor, "cart_completed", { fanId, matchId: r.match_id });
 }
 
 export function setOutage(channel: "email" | "push", on: boolean) {

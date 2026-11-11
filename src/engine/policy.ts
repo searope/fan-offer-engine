@@ -1,4 +1,10 @@
 /**
+ * Holdout assignment key. Hashing fan x match with this name makes assignment random but repeatable;
+ * renaming it (v2, ...) re-randomizes everyone, e.g. when starting a new measurement period.
+ */
+export const HOLDOUT_EXPERIMENT = "cart-winback-holdout-v1";
+
+/**
  * Every threshold the engine uses, in one place, so a marketer's question ("why 75%?") has one answer
  * and changing it is a one-line, reviewed diff. See SPEC.md §3–4a.
  */

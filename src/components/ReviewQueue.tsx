@@ -7,7 +7,7 @@ import { describeChannel, describeOffer } from "@/engine/reasons";
 import { PROMO_PLACEHOLDER } from "@/engine/copy/lint";
 
 type QueueData = ReturnType<typeof queueFn>;
-type Tab = "review" | "sent" | "rejected" | "expired" | "not_actioned";
+type Tab = "review" | "sent" | "rejected" | "expired" | "holdout" | "not_actioned";
 
 const ACTOR = "marketer@seawolves";
 const money = (c: number) => `$${(c / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -76,6 +76,7 @@ export function ReviewQueue() {
       rejected: ps.filter((p) => p.status === "rejected"),
       // Marked expired by a run, or still open but past send-by on the app's clock (a send would be refused).
       expired: ps.filter((p) => p.status === "expired" || (OPEN.includes(p.status) && lapsed(p))),
+      holdout: ps.filter((p) => p.status === "holdout"),
       not_actioned: ps.filter((p) => p.status === "held" || p.status === "suppressed"),
     };
   }, [data]);
@@ -107,7 +108,7 @@ export function ReviewQueue() {
         ))}
       </div>
 
-      <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+      <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-9">
         <Kpi label="Needs review" value={String(groups.review.length)} />
         <Kpi label="Sent" value={String(m.counts.sent)} />
         <Kpi label="Cart value reached" value={money(m.revenueAtStakeCents)} hint="Value of carts behind sent offers" />
@@ -120,6 +121,7 @@ export function ReviewQueue() {
         <Kpi label="Approval rate" value={pct(m.approvalRate)} hint="Approved ÷ decided" />
         <Kpi label="Edit rate" value={pct(m.editRate)} hint="Edited before approval. High = engine or copy needs tuning" />
         <Kpi label="Claude-written copy" value={pct(m.modelCopyShare)} hint="Rest is safe template copy" />
+        <LiftKpi m={m.measurement} />
       </section>
 
       <nav className="mt-6 flex gap-1 border-b border-slate-200 text-sm">
@@ -129,6 +131,7 @@ export function ReviewQueue() {
             ["sent", `Sent (${groups.sent.length})`],
             ["rejected", `Rejected (${groups.rejected.length})`],
             ["expired", `Expired (${groups.expired.length})`],
+            ["holdout", `Holdout (${groups.holdout.length})`],
             ["not_actioned", `No offer (${groups.not_actioned.length})`],
           ] as [Tab, string][]
         ).map(([k, label]) => (
@@ -281,6 +284,33 @@ function RunCheckBanner({ run, running, onOverride }: { run: NonNullable<QueueDa
   );
 }
 
+/** Offered vs held out: did offers make fans buy, or would they have bought anyway? */
+function LiftKpi({ m }: { m: QueueData["metrics"]["measurement"] }) {
+  const value = m.liftPts === null ? "—" : `${m.liftPts > 0 ? "+" : ""}${m.liftPts} pts`;
+  const hint =
+    `Cart completion within ${m.windowDays} days. Offered: ${m.offered.converted}/${m.offered.n}. Held out: ${m.holdout.converted}/${m.holdout.n}. ` +
+    `Needs at least ${m.minPerGroup} in each group before the difference means anything.`;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2" title={hint}>
+      <div className="text-[11px] uppercase tracking-wide text-slate-500">Lift vs holdout</div>
+      <div className="text-lg font-semibold">{value}</div>
+      <div className="text-[11px] text-slate-400">{m.enoughData ? `n = ${m.offered.n} / ${m.holdout.n}` : `too early (n = ${m.offered.n} / ${m.holdout.n})`}</div>
+    </div>
+  );
+}
+
+function HoldoutNote() {
+  return (
+    <div className="rounded-lg border border-violet-200 bg-violet-50/60 px-3 py-3 text-sm text-violet-900">
+      <div className="font-semibold">Not sent: held out for measurement</div>
+      <p className="mt-1">
+        This fan was picked at random and is not contacted about this match. The offer above is what they would have received. Comparing how often held-out fans
+        still buy with how often offered fans buy shows whether offers earn revenue or just discount purchases that would have happened anyway.
+      </p>
+    </div>
+  );
+}
+
 function Banner({ level, message }: { level: "error" | "warn" | "info"; message: string }) {
   const cls = level === "error" ? "border-red-300 bg-red-50 text-red-800" : level === "warn" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900";
   return <div className={`rounded-lg border px-3 py-2 text-sm ${cls}`}>{message}</div>;
@@ -306,6 +336,7 @@ const STATUS: Record<string, [string, string]> = {
   expired: ["Expired", "bg-slate-200 text-slate-700"],
   held: ["Held", "bg-violet-100 text-violet-800"],
   suppressed: ["No offer", "bg-slate-200 text-slate-700"],
+  holdout: ["Held out", "bg-violet-100 text-violet-800"],
 };
 
 function Chip({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -439,7 +470,7 @@ function OfferCard({ p, onChange, now }: { p: ProposalView; onChange: () => Prom
           {mode === "edit" ? (
             <EditPanel p={p} busy={busy} onCancel={() => setMode("view")} onSave={(patch) => act(() => api(`/api/proposals/${p.id}`, { method: "PATCH", body: JSON.stringify(patch) }))} />
           ) : (
-            <MessagePreview p={p} />
+            p.status === "holdout" ? <HoldoutNote /> : <MessagePreview p={p} />
           )}
         </div>
         <div className="text-sm">
@@ -786,6 +817,7 @@ function DemoControls({ data, onChange }: { data: QueueData; onChange: () => Pro
   };
   const fans = data.fans as { fanId: string; email: number; push: number }[];
   const tasks = data.salesTasks as { id: number; fanId: string; title: string; status: string }[];
+  const decidedFans = [...new Set(data.proposals.filter((p) => p.proposal && p.fanId).map((p) => p.fanId!))].sort();
   return (
     <details className="mt-4 rounded-lg border border-dashed border-slate-300 p-3 text-sm">
       <summary className="cursor-pointer font-medium text-slate-600">Demo controls (not part of the product)</summary>
@@ -817,6 +849,18 @@ function DemoControls({ data, onChange }: { data: QueueData; onChange: () => Pro
           ))}
         </div>
       </div>
+      {decidedFans.length > 0 && (
+        <div className="mt-3">
+          <div className="text-xs font-semibold uppercase text-slate-500">Fan bought (stands in for a ticketing &quot;order completed&quot; event)</div>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {decidedFans.map((fanId) => (
+              <button key={fanId} className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs" onClick={() => dev({ action: "complete_cart", fanId })}>
+                {fanId} bought
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {tasks.length > 0 && (
         <div className="mt-3">
           <div className="text-xs font-semibold uppercase text-slate-500">Salesperson task list</div>

@@ -61,7 +61,7 @@ describe("linter catches what a model gets wrong", () => {
 
 describe("draftCopy: model output is used only if it passes schema and lint", () => {
   it("uses valid model copy", async () => {
-    const r = await draftCopy(reminder, fake(async () => ({ subject: "Your seats are waiting", body: "Your 2 seats are still in your cart. Tap to finish before kickoff." })));
+    const r = await draftCopy(reminder, fake(async () => ({ subject: "Your seats are waiting", body: "Your seats are still in your cart. Tap to finish before kickoff." })));
     expect(r.source).toBe("model");
   });
   it("falls back when the model breaks a rule, and records why", async () => {

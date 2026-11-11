@@ -1,5 +1,5 @@
 import { DAY_MS, HOUR_MS, normalizeCart } from "./normalize";
-import { POLICY } from "./policy";
+import { HOLDOUT_EXPERIMENT, POLICY } from "./policy";
 import { buildReason } from "./reasons";
 import { costsOf } from "./offers";
 import type {
@@ -245,11 +245,18 @@ function decideGroup(
     }
   }
 
+  // ---- Holdout (SPEC §4c): first touches only, never the salesperson's perk calls ----
+  const heldOut = touchNumber === 1 && offer.type !== "perk" && holdoutBucket(tenant.tenantId, fanId, latest.matchId) < tenant.holdoutPct;
+  const reason = buildReason(codes, { ...facts, cartCount: carts.length }, channel);
+  if (heldOut) codes.push("HOLDOUT");
+
   return {
     ...base,
-    outcome: "propose",
+    outcome: heldOut ? "holdout" : "propose",
     reasonCodes: codes,
-    reason: buildReason(codes, { ...facts, cartCount: carts.length }, channel),
+    reason: heldOut
+      ? `Held out for measurement: ${tenant.holdoutPct}% of fans are picked at random and not contacted, so we can tell whether offers cause purchases. This fan would have received the offer shown. ${reason}`
+      : reason,
     proposal: {
       offer,
       channel,
@@ -261,4 +268,14 @@ function decideGroup(
       facts,
     },
   };
+}
+
+/** 0..99, from a 32-bit FNV-1a hash of experiment x tenant x fan x match. Pure and stable across runs. */
+export function holdoutBucket(tenantId: string, fanId: string, matchId: string): number {
+  let h = 0x811c9dc5;
+  for (const ch of `${HOLDOUT_EXPERIMENT}:${tenantId}:${fanId}:${matchId}`) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % 100;
 }

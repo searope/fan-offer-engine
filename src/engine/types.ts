@@ -45,6 +45,8 @@ export interface TenantConfig {
   merchAddonPct: number;
   /** Max value of one merch voucher. Bounds its worst-case cost; enforced by guardrails. */
   merchAddonMaxCents: number;
+  /** % of first-touch decisions held out (decided, never sent) to measure whether offers cause purchases. */
+  holdoutPct: number;
   /** Non-price perks the salesperson can offer top fans. First entry is the default. */
   perks: { perkId: string; label: string }[];
 }
@@ -86,6 +88,7 @@ export type ReasonCode =
   | "LAPSED_FAN"
   | "REGULAR_FAN"
   | "ESCALATED_SECOND_TOUCH"
+  | "HOLDOUT"
   | "CHANNEL_FROM_RECENT_SOURCE"
   | "CHANNEL_FALLBACK_CONSENT";
 
@@ -133,7 +136,8 @@ export interface Decision {
   fanId: string | null;
   matchId: string;
   cartIds: string[];
-  outcome: "propose" | "suppress" | "hold";
+  /** holdout = decided but deliberately not sent, for measurement (SPEC §4c). */
+  outcome: "propose" | "holdout" | "suppress" | "hold";
   reasonCodes: ReasonCode[];
   /** Plain-English reason for the marketer, generated from reasonCodes (not by a model). */
   reason: string;

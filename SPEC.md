@@ -107,11 +107,25 @@ Max 2 touches per fan per match. Anything else after a first touch → `ALREADY_
 Channel: prefer the source of the fan's most recent cart (App → push, Web → email) if consented, otherwise
 the other consented channel.
 
+### 4c. Holdout: measuring whether offers cause purchases
+
+A fixed share of first-touch decisions (`holdoutPct`, 15% for the Seawolves) is **decided but never sent**.
+Assignment hashes experiment × tenant × fan × match (`HOLDOUT_EXPERIMENT = "cart-winback-holdout-v1"`), so it's
+random across fans but stable across runs: a held-out fan stays held out for that match. Renaming the experiment
+re-randomizes everyone.
+
+- First touches only. A fan who got a reminder can still get the §4a follow-up.
+- Season-pass perks are never held out: withholding a personal call from the best fans costs more than it measures.
+- Held-out decisions keep the offer they would have received, get no copy drafted, and are never contacted.
+- Measurement (intention to treat): cart completion within 7 days of the decision, for everyone eligible who
+  wasn't held out vs everyone held out, whatever the marketer then did. The UI shows the lift but labels it
+  "too early" below 30 decisions per group.
+
 ## 5. Expected decisions for the sample (the tests)
 
 | Carts | Fan | Outcome | Offer | Channel | Why |
 |---|---|---|---|---|---|
-| C-1001 + C-1006 | F-204 | propose | reminder | push | Two attempts in an hour (web, then app): high intent. Lower Bowl 88% sold, regular buyer. A discount gives away revenue we'd get anyway. One send, not two. |
+| C-1001 + C-1006 | F-204 | **holdout** (would be: reminder, push) | reminder | push | Two attempts in an hour (web, then app): high intent. Lower Bowl 88% sold, regular buyer. A discount gives away revenue we'd get anyway. One decision, not two. F-204 × this match hashes into the 15% holdout (§4c), so nothing is sent. |
 | C-1002 + C-1008 | F-511 | propose | reminder | email | First-time buyer; the guest cart is the same person (exact email match), so two attempts = real intent. Upper Deck is soft (41%), but 18 days out we nudge at full price first. If it doesn't convert in 72 h, the next run escalates to a 10% promo (§4a). Email is the only consented channel. |
 | C-1003 | F-092 | propose | merch_addon 10%, up to $10 | push | Lapsed (180 days), email opted out. Lower Bowl 88%: don't cut the ticket price. Add match-day merch value instead. |
 | C-1004 | F-333 | propose | perk (pitch-side access) | sales_task | Season-pass holder, 40 tickets, bringing a group of 6 into Club at $540. Club is 97% sold, so a discount is pure giveaway. A perk costs little, rewards the club's best fan, and the salesperson delivers it personally. |
@@ -131,7 +145,7 @@ the other consented channel.
 
 ## 7. After approval (not in `decide()`)
 
-- Send-time re-check: consent, frequency cap, cart not converted, proposal not expired, guardrails. Any
+- Send-time re-check: consent, frequency cap, cart not already bought (`cart_completions`), proposal not expired, guardrails. Any
   failure moves the proposal to `blocked` with a reason in the UI. The send never drops quietly.
 - Outbox idempotency key: `tenant:trigger:fan:match`. A second approval or a retry can't double-send.
 - Every state change goes to an append-only audit log (who, when, before/after on edits).

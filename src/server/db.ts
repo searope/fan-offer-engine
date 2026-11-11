@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS sales_tasks (
   title TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- Fans who finished buying (production: ticketing order events). Used for the send-time
+-- "already bought" check and for measuring offers against the holdout.
+CREATE TABLE IF NOT EXISTS cart_completions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, fan_id TEXT NOT NULL, match_id TEXT NOT NULL,
+  completed_at TEXT NOT NULL, UNIQUE (tenant_id, fan_id, match_id)
+);
 `;
 
 const g = globalThis as unknown as { __offerDb?: DatabaseSync };
@@ -107,5 +113,5 @@ export function setSetting(key: string, value: string) {
 
 export function resetDb() {
   const d = db();
-  for (const t of ["audit_log", "outbox", "contact_history", "promo_codes", "sales_tasks", "proposals", "runs", "fans", "settings"]) d.exec(`DELETE FROM ${t}`);
+  for (const t of ["audit_log", "outbox", "contact_history", "promo_codes", "sales_tasks", "cart_completions", "proposals", "runs", "fans", "settings"]) d.exec(`DELETE FROM ${t}`);
 }
