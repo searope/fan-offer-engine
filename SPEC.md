@@ -41,7 +41,7 @@ raw cart export ─▶ normalize ─▶ resolve identity ─▶ group (fan × ma
 ```
 
 `decide()` is **pure and synchronous**: same input, same decisions. Every cart that goes in comes out
-in exactly one decision (`propose`, `suppress`, or `hold`), so nothing drops silently.
+in exactly one decision (`propose`, `holdout`, `suppress`, or `hold`), so nothing drops silently.
 
 ## 2. What is a rule, what is a model call
 
