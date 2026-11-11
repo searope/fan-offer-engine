@@ -11,12 +11,16 @@ Stack: Next.js 16 (App Router) + TypeScript, `node:sqlite` for the POC store, Cl
 for copy, Vitest. No CRM: delivery goes through a transactional email provider and the app's push service
 (both stubbed behind one interface), plus a task list for the salesperson.
 
+**The one assumption everything rests on:** the ticketing export's sell-through and consent can be trusted.
+Every rule below acts on those two fields. So every run checks the export first (`src/engine/contract.ts`,
+SPEC §0) and **pauses** if it is stale, inconsistent, implausible, or disagrees with fan records.
+
 ## Run it (Windows / PowerShell)
 
 ```powershell
 npm install
 npm run dev        # http://localhost:3000, then click "Run engine on stale carts"
-npm test           # 62 tests: per-cart decisions, invariants on generated carts, guardrails, copy lint
+npm test           # 86 tests: per-cart decisions, invariants, export checks, holdout, guardrails, copy lint, queue grouping
 npm run typecheck  # generates Next route types first, then runs tsc
 ```
 
@@ -43,21 +47,27 @@ To see Claude-drafted copy, pick one of these, then click "Run engine on stale c
 Check the model path end to end with `$env:LIVE_MODEL="1"; npx vitest run copy -t live`.
 
 `$env:COPY_MODEL_PROVIDER="off"` turns the model off. "Demo controls" at the bottom of the page reset the
-data, advance the clock (to show the discount escalation), toggle fan opt-ins, and simulate a provider outage.
+data, switch between the 8-cart sample and a ~150-cart synthetic export (to review the queue at volume),
+advance the clock (the export then fails its freshness check, and "Run anyway" with a reason shows the
+override and the discount escalation), toggle fan opt-ins, mark a fan as having bought (for the holdout
+measurement), and simulate a provider outage.
 
 ## Where things are
 
 | Path | What |
 |---|---|
 | `SPEC.md` | The decision contract, written and reviewed **before** the engine (see Section C) |
-| `src/engine/decide.ts` | Pure, deterministic decisions: normalize → identity → group → gates → offer → channel |
+| `src/engine/contract.ts` | Export checks run before every decision; a failing export pauses the run (SPEC §0) |
+| `src/engine/decide.ts` | Pure, deterministic decisions: normalize → identity → group → gates → offer → channel → holdout |
 | `src/engine/policy.ts`, `tenants.ts` | Every threshold in one place; per-team config (onboarding a team = config) |
 | `src/engine/offers.ts` | What each offer type costs, as typed lines (ticket discount, capped merch voucher, perk) |
 | `src/engine/guardrails.ts` | Independent second check: 15% cap, single-use, consent, expiry, already contacted |
 | `src/engine/copy/` | Model adapter (`CopyModel`), prompt, schema + lint, template fallback |
 | `src/server/service.ts` | Run, approve (send-time re-check), edit, reject, bulk approve, outbox, metrics/alerts |
 | `src/server/db.ts` | Schema: unique idempotency keys on outbox, contact history, promo codes; DB CHECK on 1–15% |
+| `src/engine/data/synthetic.ts` | Deterministic ~150-cart export for reviewing the queue at volume |
 | `src/components/ReviewQueue.tsx` | The marketer UI |
+| `src/components/queueView.ts` | Filtering, grouping and per-group totals for the queue (tested) |
 
 ## Where AI is used, and where it isn't
 
@@ -96,6 +106,48 @@ AI stays out of anything that decides who gets money off or who gets contacted.
 
 ---
 
+## Roadmap (one ordered list)
+
+Each step depends on the one before it being proven out. This replaces the separate lists in Section A's
+"Next" line and in the video.
+
+1. **Live cart events and hourly runs.** Replace the export with ticketing's cart and order events, run hourly
+   per team, and alert when no run completes in N hours. Everything below needs real volume and real
+   "order completed" events.
+2. **Read the holdout.** The holdout is built. Once each offer type has 30+ decisions per group, keep, change
+   or drop it based on lift, not on conversions.
+3. **Production Claude path.** An Anthropic API implementation of `CopyModel` (server-side key), plus a fixed
+   set of test cases measuring how often drafts pass the copy checks. This is needed before other teams
+   onboard with their own voice.
+4. **Rules a marketer can change safely.** Thresholds as versioned data, each proposal stamped with the
+   version, and a preview that re-runs the last export and shows what would change before a new version goes
+   live. It comes after step 2, because the holdout tells us which thresholds matter.
+5. **Trigger #2: season-pass renewal.** A new candidate selector and offer table on the shared gates,
+   guardrails, queue and contact history (Section A).
+6. **Onboard the league's teams.** A tenant row each, with offers switched on per team after its export passes
+   the checks.
+
+Not planned: **SMS** (mentioned in the video). The brief limits delivery to email and app push, and SMS
+would need its own consent and provider. More sample data, also from the video, is done: the synthetic export.
+
+**Done after the assessment** (from Provn's feedback): the export checks that pause a run (`1a65f40`), the
+holdout and lift measurement (`30e349f`), and the queue at volume (`0592fdc`).
+
+## At 10× and 100× the volume
+
+- **Queue.** One card at a time doesn't hold at 100×. The queue now groups by match, match & section, or
+  offer type, with per-group totals that keep ticket discount, voucher worst case and perks apart. It filters
+  by offer, channel, segment and ID, has a one-line compact view, and pages ten at a time. A marketer works
+  group by group: bulk-approve a group's no-discount reminders, and open only the discounts, perks and
+  blocked cards. Discounts stay one by one.
+- **Engine.** `decide()` is linear and pure, so volume is a scheduling question: run per team, per hour. The
+  POC's SQLite becomes Postgres, with every row keyed by team.
+- **Claude.** Only proposals get copy, at most 4 calls in flight. At 100× that's a few hundred short drafts a
+  day per team on a small model. Templates cover any failure, so a slow or failing model never blocks the
+  queue.
+- **Measurement gets real.** At 8 carts, the holdout and the export's share checks can't say anything. At
+  100× the holdout reaches 30 per group in days, and share swings become a reliable alarm.
+
 ## Section A: Written analysis
 
 **Who gets an offer.** A stale cart signals intent; it isn't a reason to discount. The engine first checks
@@ -103,8 +155,8 @@ whether we may contact the fan. The team must be enabled on the platform. The fa
 identified: a guest checkout links to an account only on an exact email match, otherwise it is held, never
 guessed. The match can't have been played or be hours away. The fan must have opted into a channel, and must
 not have been contacted recently. Then duplicates collapse: F-204's web and app carts, and F-511's account and
-guest carts, each become one decision, so nobody gets two messages. Of 8 sample carts: 4 offers,
-1 suppressed (C-1005, match played), 1 held (C-1007, league team still onboarding).
+guest carts, each become one decision, so nobody gets two messages. Of 8 sample carts: 3 offers, 1 held
+out for measurement (F-204), 1 suppressed (C-1005, match played), 1 held (C-1007, team still onboarding).
 
 **Which offer.** Discount depth follows inventory. Where a section is selling (≥ 75% sold), a ticket discount
 gives away revenue we'd get anyway. F-204, a regular, gets a plain reminder. F-092, lapsed 180 days, gets a
@@ -121,10 +173,10 @@ an app cart gets push, a web cart gets email.
 predictable and auditable. Claude only writes the message. That text is linted, reviewed, and replaced by a
 safe template on any failure (see "Where AI is used").
 
-**Not built yet:** real ingestion (the sample export is the input), auth and roles, real providers, holdout
-groups, copy A/B tests, seat-upgrade and match-pass offers. Marketers can't edit rules: thresholds live in
-`policy.ts` and team settings in `tenants.ts`, so a change is a reviewed, tested deploy.
-**Next:** holdout measurement (B1), hourly runs off ticketing's cart events, then trigger #2.
+**Not built yet:** real ingestion (the sample export is the input), auth and roles, real providers, copy A/B
+tests, seat-upgrade and match-pass offers. Marketers can't edit rules: thresholds live in `policy.ts` and team
+settings in `tenants.ts`, so a change is a reviewed, tested deploy.
+**Next:** live cart events with hourly runs, then reading the holdout, then trigger #2 (see Roadmap).
 
 **A second trigger without a rewrite.** Everything after "who is a candidate" is trigger-agnostic: the
 `Decision`/`Proposal` shape, guardrails, copy layer, review queue, outbox, idempotency keys and contact
@@ -142,7 +194,9 @@ policy.
 
 **"Good" means incremental revenue, not conversions.** Many fans who get a reminder would have bought anyway
 (F-204 probably would). So a random holdout (10–20% of eligible decisions, decided and logged but not sent)
-is compared on cart completion within 7 days, per offer type. With a small fan base we read this over weeks
+is compared on cart completion within 7 days, per offer type. **Built:** 15% of first-touch decisions are held
+out (stable per fan × match, perks exempt), and a "Lift vs holdout" KPI compares completion, labeled "too
+early" until each group has 30 decisions (SPEC §4c). With a small fan base we read this over weeks
 and across matches, not per send. Alongside it:
 - **Discount efficiency:** redeemed ticket discount $ and merch voucher $ (tracked separately) per incremental $. Single-use codes are tied to the
   proposal's idempotency key, so every redemption traces back to one offer.
@@ -156,7 +210,8 @@ and across matches, not per send. Alongside it:
 
 | Risk | How it's caught |
 |---|---|
-| Source data looks valid but is wrong (stale sell-through → discount on a section that's selling; a consent column flipped in an export) | Consent comes from the fan record, never the export. Ingest data contract: per-field unknown/not-synced rates and day-over-day shift (e.g. opted-in share jumps) pause the run. Unreadable fields fail closed (opt-ins count as "No"). |
+| Source data looks valid but is wrong (stale sell-through → discount on a section that's selling; a consent column flipped in an export) | **Built:** `checkExport()` runs before every decision: freshness, one sell-through per section, no implausible drops vs the last accepted export, opted-in share swings, export-vs-fan-record consent disagreement, unreadable rows. Any failure pauses the run with a red banner; running anyway needs an audited reason. Consent also comes from the fan record, and unreadable opt-ins count as "No". |
+| Offer to a fan who already bought | **Built:** a send-time check against completed orders blocks it. |
 | Wrong identity merge (shared family email) | Exact match to exactly one account only, otherwise held. Merge count is monitored. |
 | Rule regression in a code change (threshold edit makes everyone promo-eligible) | Golden tests on the sample + invariants on generated carts in CI. Guardrails run independently of `decide()`, and a mismatch is flagged as an engine bug. DB CHECK constraints reject codes over 15% or multi-use. Per-run anomaly check: proposal count and committed discount vs trailing average. |
 | Model writes something false (fake scarcity, wrong %) | Lint, then human review. Rejected drafts are logged with reasons. |
@@ -218,3 +273,11 @@ on by default, then moved next to "Approve all reminders". *AI gave:* a checkbox
 sense. I replaced it with separate Rejected and Expired tabs and removed the checkbox. "Needs review" now shows
 only offers that can still be sent, and anything past its send-by time moves straight to Expired, read-only.
 **Me:** requested to change the UI to move the expired reminder cards to Expired tab and sort the current ones in the order of expiration.
+
+**6. After the assessment: acting on Provn's feedback.** *Asked:* a list of improvements based on the
+evaluation report, then build the top four. *AI gave:* the list, and pointed out that B1 described export
+checks, a run-stopped alert and an anomaly pause that weren't built. *Changed:* the export checks and the
+holdout went from described to built, with tests written first; the queue got grouping, filters, a compact
+view and paging, with a synthetic dataset to show it; and this README got one ordered roadmap and a
+volume section. The engine's holdout hash happened to put F-204 in the holdout. The experiment name was fixed
+before checking the result, not tuned until the demo looked nice. **Me:** _…_
