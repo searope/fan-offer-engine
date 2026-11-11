@@ -50,11 +50,11 @@ export function ReviewQueue() {
     };
   }, []);
 
-  const run = async () => {
+  const run = async (overrideReason?: string) => {
     setRunning(true);
     setError(null);
     try {
-      await api("/api/runs", { method: "POST" });
+      await api("/api/runs", { method: "POST", body: JSON.stringify(overrideReason ? { overrideReason } : {}) });
       await load();
       setTab("review");
     } catch (e) {
@@ -94,12 +94,13 @@ export function ReviewQueue() {
             {data.lastRun && <> · last run #{data.lastRun.id} · copy model: {data.lastRun.modelName}</>}
           </p>
         </div>
-        <button onClick={run} disabled={running} className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 disabled:opacity-60">
+        <button onClick={() => run()} disabled={running} className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 disabled:opacity-60">
           {running ? "Running… (drafting copy with Claude)" : "Run engine on stale carts"}
         </button>
       </header>
 
       {error && <Banner level="error" message={error} />}
+      {data.lastRun && <RunCheckBanner run={data.lastRun} running={running} onOverride={(reason) => run(reason)} />}
       <div className="mt-4 space-y-2">
         {m.alerts.map((a, i) => (
           <Banner key={i} level={a.level} message={a.message} />
@@ -221,6 +222,59 @@ function BulkReminderBar({ proposals, onChange }: { proposals: ProposalView[]; o
               {busy ? "Sending…" : `Confirm: send ${eligible.length}`}
             </button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * SPEC §0: every run first checks the export it's about to trust. A failed check pauses the run
+ * (nothing proposed, nothing sent). A person can run anyway, but only with a written reason, which is audited.
+ */
+function RunCheckBanner({ run, running, onOverride }: { run: NonNullable<QueueData["lastRun"]>; running: boolean; onOverride: (reason: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  if (run.status === "overridden" && run.contract) {
+    return (
+      <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        Run #{run.id} used an export that failed its checks ({run.contract.problems.map((p) => p.code.toLowerCase().replace(/_/g, " ")).join(", ")}). Run anyway by{" "}
+        {run.contract.overriddenBy}: “{run.contract.overrideReason}”.
+      </div>
+    );
+  }
+  if (run.status !== "paused" || !run.contract) return null;
+  return (
+    <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+      <div className="font-semibold">Run #{run.id} paused: the cart export failed its checks. Nothing was proposed or sent.</div>
+      <ul className="mt-1 list-disc pl-5">
+        {run.contract.problems.map((p, i) => (
+          <li key={i}>{p.message}</li>
+        ))}
+      </ul>
+      <p className="mt-1 text-xs text-red-800">The offer rules trust this export&apos;s sell-through and opt-ins. Fix the export and run again, or run anyway if you know why it&apos;s safe.</p>
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="mt-2 rounded-md border border-red-300 bg-white px-3 py-1.5 text-red-800 hover:bg-red-100">
+          Run anyway…
+        </button>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <input
+            className="min-w-72 flex-1 rounded-md border border-red-300 bg-white px-2 py-1.5 text-slate-900"
+            placeholder="Why is it safe? (required, logged)"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <button onClick={() => setOpen(false)} className="rounded-md px-3 py-1.5 text-red-800 hover:bg-red-100">
+            Cancel
+          </button>
+          <button
+            onClick={() => onOverride(reason.trim())}
+            disabled={running || reason.trim().length < 10}
+            className="rounded-md bg-red-700 px-3 py-1.5 font-semibold text-white hover:bg-red-800 disabled:opacity-50"
+          >
+            {running ? "Running…" : "Run anyway"}
+          </button>
         </div>
       )}
     </div>

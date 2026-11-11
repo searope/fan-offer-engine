@@ -6,6 +6,7 @@ import { decide } from "@/engine/decide";
 import { checkProposal, type GuardrailContext } from "@/engine/guardrails";
 import { SAMPLE_AS_OF, SAMPLE_CARTS, SAMPLE_FAN_ACCOUNTS } from "@/engine/data/sample-carts";
 import { DEFAULT_TENANTS } from "@/engine/tenants";
+import { checkExport, type ContractProblem, type ExportSnapshot } from "@/engine/contract";
 import { draftCopy, type DraftedCopy } from "@/engine/copy/draft";
 import { lintCopy, MessageCopySchema, PROMO_PLACEHOLDER, type MessageCopy } from "@/engine/copy/lint";
 import { ClaudeAgentCopyModel, type CopyModel } from "@/engine/copy/model";
@@ -204,18 +205,45 @@ function problemsFor(r: ProposalRow, proposal: Proposal, copy: MessageCopy | nul
 }
 
 // ---------- run ----------
-export async function runEngine(actor: string) {
+function lastAcceptedSnapshot(): ExportSnapshot | null {
+  const r = db().prepare("SELECT contract_json FROM runs WHERE status IN ('completed','overridden') AND contract_json IS NOT NULL ORDER BY id DESC LIMIT 1").get() as
+    | { contract_json: string }
+    | undefined;
+  return r ? (JSON.parse(r.contract_json) as { snapshot: ExportSnapshot }).snapshot : null;
+}
+
+export async function runEngine(actor: string, opts: { overrideReason?: string } = {}) {
   seedFans();
   const asOf = now();
   const model = copyModel();
+  const liveRows = db().prepare("SELECT fan_id, email_opt_in, push_opt_in FROM fans").all() as { fan_id: string; email_opt_in: number; push_opt_in: number }[];
+
+  // SPEC §0: test the one assumption everything rests on (the export can be trusted) before deciding anything.
+  const contract = checkExport({
+    carts: SAMPLE_CARTS,
+    exportedAt: SAMPLE_AS_OF,
+    asOf,
+    previous: lastAcceptedSnapshot(),
+    fanRecords: liveRows.map((f) => ({ fanId: f.fan_id, email: !!f.email_opt_in, push: !!f.push_opt_in })),
+  });
   const runId = Number(
-    db().prepare("INSERT INTO runs(trigger, as_of, started_at, model_name) VALUES('cart_winback', ?, ?, ?)").run(asOf, new Date().toISOString(), model?.name ?? "off").lastInsertRowid,
+    db()
+      .prepare("INSERT INTO runs(trigger, as_of, started_at, model_name, status, contract_json) VALUES('cart_winback', ?, ?, ?, ?, ?)")
+      .run(asOf, new Date().toISOString(), model?.name ?? "off", "running", JSON.stringify(contract)).lastInsertRowid,
   );
+  if (!contract.ok && !opts.overrideReason) {
+    db().prepare("UPDATE runs SET status = 'paused', finished_at = ? WHERE id = ?").run(new Date().toISOString(), runId);
+    audit(null, actor, "run_paused", { runId, problems: contract.problems });
+    return { runId, paused: true as const, problems: contract.problems };
+  }
+  if (!contract.ok) {
+    db().prepare("UPDATE runs SET contract_json = ? WHERE id = ?").run(JSON.stringify({ ...contract, overrideReason: opts.overrideReason, overriddenBy: actor }), runId);
+    audit(null, actor, "run_overridden", { runId, reason: opts.overrideReason, problems: contract.problems });
+  }
+
   // The cart export's opt-in columns are a snapshot; the fan record is the source of truth.
   // A channel counts as consented only if both say yes.
-  const live = new Map(
-    (db().prepare("SELECT fan_id, email_opt_in, push_opt_in FROM fans").all() as { fan_id: string; email_opt_in: number; push_opt_in: number }[]).map((f) => [f.fan_id, f]),
-  );
+  const live = new Map(liveRows.map((f) => [f.fan_id, f]));
   const carts = SAMPLE_CARTS.map((c) => {
     const f = live.get(c.fanId);
     return f ? { ...c, emailOptIn: c.emailOptIn === "Yes" && f.email_opt_in ? "Yes" : "No", pushOptIn: c.pushOptIn === "Yes" && f.push_opt_in ? "Yes" : "No" } : c;
@@ -282,9 +310,11 @@ export async function runEngine(actor: string) {
     copyFallbacks: drafts.filter((d) => d.source === "template").map((d) => d.fallbackReason),
     engineGuardrailMismatches,
   };
-  db().prepare("UPDATE runs SET finished_at = ?, stats_json = ? WHERE id = ?").run(new Date().toISOString(), JSON.stringify(stats), runId);
+  db()
+    .prepare("UPDATE runs SET finished_at = ?, stats_json = ?, status = ? WHERE id = ?")
+    .run(new Date().toISOString(), JSON.stringify(stats), contract.ok ? "completed" : "overridden", runId);
   audit(null, actor, "run", { runId, asOf, stats });
-  return { runId, stats };
+  return { runId, paused: false as const, stats };
 }
 
 // ---------- marketer actions ----------
@@ -444,13 +474,25 @@ export function queue() {
   seedFans();
   const rows = db().prepare("SELECT * FROM proposals ORDER BY id").all() as unknown as ProposalRow[];
   const proposals = rows.map(toView);
-  const lastRun = db().prepare("SELECT id, as_of, model_name, stats_json, finished_at FROM runs ORDER BY id DESC LIMIT 1").get() as
-    | { id: number; as_of: string; model_name: string; stats_json: string | null; finished_at: string | null }
+  const lastRun = db().prepare("SELECT id, as_of, model_name, stats_json, finished_at, status, contract_json FROM runs ORDER BY id DESC LIMIT 1").get() as
+    | { id: number; as_of: string; model_name: string; stats_json: string | null; finished_at: string | null; status: string | null; contract_json: string | null }
     | undefined;
+  // Data-quality details come from the latest run that actually processed the export (a paused run didn't).
+  const lastStats = db().prepare("SELECT stats_json FROM runs WHERE stats_json IS NOT NULL ORDER BY id DESC LIMIT 1").get() as { stats_json: string } | undefined;
   return {
     now: now(),
     exportedAt: SAMPLE_AS_OF,
-    lastRun: lastRun ? { id: lastRun.id, asOf: lastRun.as_of, modelName: lastRun.model_name, finishedAt: lastRun.finished_at, stats: J(lastRun.stats_json, null) } : null,
+    lastRun: lastRun
+      ? {
+          id: lastRun.id,
+          asOf: lastRun.as_of,
+          modelName: lastRun.model_name,
+          finishedAt: lastRun.finished_at,
+          status: (lastRun.status ?? "completed") as "running" | "completed" | "paused" | "overridden",
+          contract: J<{ ok: boolean; problems: ContractProblem[]; overrideReason?: string; overriddenBy?: string } | null>(lastRun.contract_json, null),
+          stats: J(lastStats?.stats_json ?? null, null),
+        }
+      : null,
     proposals,
     metrics: metrics(proposals),
     fans: db().prepare("SELECT tenant_id AS tenantId, fan_id AS fanId, email_opt_in AS email, push_opt_in AS push FROM fans ORDER BY fan_id").all(),

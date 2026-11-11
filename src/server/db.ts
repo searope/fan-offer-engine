@@ -69,11 +69,15 @@ export function db(): DatabaseSync {
     const d = new DatabaseSync(path.join(DATA_DIR, "offers.db"));
     d.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     d.exec(SCHEMA);
-    // Migration for databases created before vouchers had a cap.
-    const cols = d.prepare("PRAGMA table_info(promo_codes)").all() as { name: string }[];
-    if (!cols.some((c) => c.name === "max_value_cents")) {
-      d.exec("ALTER TABLE promo_codes ADD COLUMN max_value_cents INTEGER CHECK (max_value_cents IS NULL OR max_value_cents > 0)");
-    }
+    // Additive migrations for databases created by earlier versions.
+    const addColumn = (table: string, column: string, ddl: string) => {
+      const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (!cols.some((c) => c.name === column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    };
+    addColumn("promo_codes", "max_value_cents", "max_value_cents INTEGER CHECK (max_value_cents IS NULL OR max_value_cents > 0)");
+    // completed | paused (export failed checks) | overridden (a person ran it anyway, with a reason)
+    addColumn("runs", "status", "status TEXT");
+    addColumn("runs", "contract_json", "contract_json TEXT");
     g.__offerDb = d;
   }
   return g.__offerDb;

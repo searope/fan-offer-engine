@@ -4,6 +4,26 @@ Status: **v2, reviewed**. Reviewer redirects: F-511 promo moved to a second touc
 `src/engine/__tests__/` encode every decision in the table below. Change this file first, then the tests,
 then the code.
 
+## 0. The one assumption everything rests on
+
+**The ticketing export's sell-through and consent can be trusted.** Sell-through decides whether a discount
+earns revenue or gives it away; consent decides whether we may contact the fan at all. If either is wrong,
+every rule below makes confidently wrong decisions.
+
+So every run tests it first (`src/engine/contract.ts`, `checkExport()`), before `decide()` sees the data:
+
+| Check | Fails when |
+|---|---|
+| Fresh | Export is older than 6 h, or stamped in the future |
+| Consistent | One match + section reports two sell-through values more than 2 points apart |
+| Plausible | Sell-through fell more than 10 points since the last accepted export (seats rarely un-sell) |
+| Stable consent | Opted-in share moved more than 20 points vs the last accepted export (with ≥ 20 rows) |
+| Consent agrees | More than 20% of fans are opted in per the export but opted out in their fan record (with ≥ 5 fans) |
+| Readable | More than 25% of rows have an unreadable match, seats, price or sell-through |
+
+A failing export **pauses the run**: nothing is proposed or sent, and the queue shows a red banner listing
+the problems. A person can run anyway only with a written reason, which is audited and shown on the run.
+
 ## 1. Pipeline
 
 ```
