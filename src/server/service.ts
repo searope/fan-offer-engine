@@ -5,6 +5,7 @@ import { z } from "zod";
 import { decide } from "@/engine/decide";
 import { checkProposal, type GuardrailContext } from "@/engine/guardrails";
 import { SAMPLE_AS_OF, SAMPLE_CARTS, SAMPLE_FAN_ACCOUNTS } from "@/engine/data/sample-carts";
+import { syntheticExport, SYNTHETIC_EXPORTED_AT } from "@/engine/data/synthetic";
 import { DEFAULT_TENANTS } from "@/engine/tenants";
 import { checkExport, type ContractProblem, type ExportSnapshot } from "@/engine/contract";
 import { draftCopy, type DraftedCopy } from "@/engine/copy/draft";
@@ -20,6 +21,37 @@ import { providers } from "./delivery";
 /** Demo clock: the sample export's moment plus an offset you can advance from the UI. */
 export function now(): string {
   return new Date(Date.parse(SAMPLE_AS_OF) + Number(getSetting("clock_offset_ms", "0"))).toISOString();
+}
+
+// ---------- the export being processed ----------
+export type DatasetName = "sample" | "synthetic";
+let syntheticCache: ReturnType<typeof syntheticExport> | null = null;
+
+/**
+ * Stand-in for the ticketing export. "sample" is the 8 carts from the brief; "synthetic" is ~150 carts for
+ * reviewing the queue at volume. Production: the latest export (or cart events) from ticketing.
+ */
+function currentExport(): { name: DatasetName; carts: RawCartRow[]; accounts: { fanId: string; email: string }[]; exportedAt: string } {
+  if (getSetting("dataset", "sample") === "synthetic") {
+    syntheticCache ??= syntheticExport();
+    return { name: "synthetic", carts: syntheticCache.carts, accounts: syntheticCache.accounts, exportedAt: SYNTHETIC_EXPORTED_AT };
+  }
+  return { name: "sample", carts: SAMPLE_CARTS, accounts: SAMPLE_FAN_ACCOUNTS, exportedAt: SAMPLE_AS_OF };
+}
+
+/** Run fn over items with at most `limit` in flight (model calls: rate limits and cost). */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return out;
 }
 
 function copyModel(): CopyModel | null {
@@ -120,7 +152,7 @@ function toView(r: ProposalRow): ProposalView {
     status: r.status,
     statusDetail: r.status_detail,
     consent: consentOf(r.tenant_id, r.fan_id),
-    rawCarts: SAMPLE_CARTS.filter((c) => (J(r.cart_ids_json, []) as string[]).includes(c.cartId)),
+    rawCarts: currentExport().carts.filter((c) => (J(r.cart_ids_json, []) as string[]).includes(c.cartId)),
     audit,
   };
 }
@@ -152,9 +184,10 @@ function setStatus(id: number, status: ProposalStatus, detail: string | null = n
 // ---------- fans (stand-in for the ticketing platform's fan/consent table) ----------
 function seedFans() {
   const tenantByTeam = new Map(DEFAULT_TENANTS.map((t) => [t.teamName, t.tenantId]));
-  const emailOf = new Map(SAMPLE_FAN_ACCOUNTS.map((a) => [a.fanId, a.email]));
+  const src = currentExport();
+  const emailOf = new Map(src.accounts.map((a) => [a.fanId, a.email]));
   const agg = new Map<string, { tenantId: string; fanId: string; email: boolean; push: boolean }>();
-  for (const c of SAMPLE_CARTS) {
+  for (const c of src.carts) {
     const tenantId = tenantByTeam.get(c.team);
     if (!tenantId || !/^F-\d+$/.test(c.fanId)) continue;
     const k = `${tenantId}:${c.fanId}`;
@@ -214,14 +247,15 @@ function lastAcceptedSnapshot(): ExportSnapshot | null {
 
 export async function runEngine(actor: string, opts: { overrideReason?: string } = {}) {
   seedFans();
+  const src = currentExport();
   const asOf = now();
   const model = copyModel();
   const liveRows = db().prepare("SELECT fan_id, email_opt_in, push_opt_in FROM fans").all() as { fan_id: string; email_opt_in: number; push_opt_in: number }[];
 
   // SPEC §0: test the one assumption everything rests on (the export can be trusted) before deciding anything.
   const contract = checkExport({
-    carts: SAMPLE_CARTS,
-    exportedAt: SAMPLE_AS_OF,
+    carts: src.carts,
+    exportedAt: src.exportedAt,
     asOf,
     previous: lastAcceptedSnapshot(),
     fanRecords: liveRows.map((f) => ({ fanId: f.fan_id, email: !!f.email_opt_in, push: !!f.push_opt_in })),
@@ -244,11 +278,11 @@ export async function runEngine(actor: string, opts: { overrideReason?: string }
   // The cart export's opt-in columns are a snapshot; the fan record is the source of truth.
   // A channel counts as consented only if both say yes.
   const live = new Map(liveRows.map((f) => [f.fan_id, f]));
-  const carts = SAMPLE_CARTS.map((c) => {
+  const carts = src.carts.map((c) => {
     const f = live.get(c.fanId);
     return f ? { ...c, emailOptIn: c.emailOptIn === "Yes" && f.email_opt_in ? "Yes" : "No", pushOptIn: c.pushOptIn === "Yes" && f.push_opt_in ? "Yes" : "No" } : c;
   });
-  const run = decide({ carts, fanAccounts: SAMPLE_FAN_ACCOUNTS, contactHistory: contactHistory(), tenants: DEFAULT_TENANTS, asOf, exportedAt: SAMPLE_AS_OF });
+  const run = decide({ carts, fanAccounts: src.accounts, contactHistory: contactHistory(), tenants: DEFAULT_TENANTS, asOf, exportedAt: src.exportedAt });
 
   // Open proposals that are now past expiry can't be sent any more.
   for (const r of db().prepare("SELECT * FROM proposals WHERE status IN ('pending_review','blocked','failed')").all() as unknown as ProposalRow[]) {
@@ -291,7 +325,10 @@ export async function runEngine(actor: string, opts: { overrideReason?: string }
     else fresh.push(d);
   }
 
-  const drafts = await Promise.all(fresh.map((d) => draftCopy(d, model)));
+  // At most 4 model calls in flight. The synthetic dataset uses templates: 100+ live calls per demo run
+  // would be slow and cost money without showing anything new.
+  const draftModel = src.name === "synthetic" ? null : model;
+  const drafts = await mapLimit(fresh, 4, (d) => draftCopy(d, draftModel));
   let engineGuardrailMismatches = 0;
   fresh.forEach((d, i) => {
     const dr = drafts[i];
@@ -312,7 +349,8 @@ export async function runEngine(actor: string, opts: { overrideReason?: string }
 
   const count = (o: Decision["outcome"]) => run.decisions.filter((d) => d.outcome === o).length;
   const stats = {
-    carts: SAMPLE_CARTS.length,
+    carts: src.carts.length,
+    dataset: src.name,
     proposed: count("propose"),
     newProposals: fresh.length,
     alreadyQueued,
@@ -513,6 +551,7 @@ export function queue() {
     metrics: metrics(proposals),
     fans: db().prepare("SELECT tenant_id AS tenantId, fan_id AS fanId, email_opt_in AS email, push_opt_in AS push FROM fans ORDER BY fan_id").all(),
     outages: { email: getSetting("outage:email", "0") === "1", push: getSetting("outage:push", "0") === "1" },
+    dataset: currentExport().name,
     salesTasks: db().prepare("SELECT id, fan_id AS fanId, title, status, created_at AS createdAt FROM sales_tasks ORDER BY id DESC").all(),
   };
 }
@@ -602,8 +641,17 @@ function measure(ps: ProposalView[]) {
 }
 
 // ---------- demo controls ----------
+/** Switch the export the demo processes. Starts from a clean slate: the fans are different. */
+export function setDataset(name: DatasetName) {
+  setSetting("dataset", name);
+  resetDemo();
+}
+
+/** Clean slate for the current dataset (the dataset choice itself survives a reset). */
 export function resetDemo() {
+  const dataset = getSetting("dataset", "sample");
   resetDb();
+  setSetting("dataset", dataset);
   for (const f of ["sent-email.jsonl", "sent-push.jsonl"]) rmSync(path.join(DATA_DIR, f), { force: true });
   seedFans();
 }

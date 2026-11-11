@@ -5,6 +5,7 @@ import type { ProposalView, queue as queueFn } from "@/server/service";
 import type { Channel, CostLine, Offer, RawCartRow } from "@/engine/types";
 import { describeChannel, describeOffer } from "@/engine/reasons";
 import { PROMO_PLACEHOLDER } from "@/engine/copy/lint";
+import { applyFilters, DEFAULT_FILTERS, groupProposals, type Filters, type Group, type GroupBy } from "@/components/queueView";
 
 type QueueData = ReturnType<typeof queueFn>;
 type Tab = "review" | "sent" | "rejected" | "expired" | "holdout" | "not_actioned";
@@ -30,6 +31,9 @@ const isLapsed = (p: ProposalView, now: string) => OPEN.includes(p.status) && !!
 export function ReviewQueue() {
   const [data, setData] = useState<QueueData | null>(null);
   const [tab, setTab] = useState<Tab>("review");
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [groupBy, setGroupBy] = useState<GroupBy>("none");
+  const [view, setView] = useState<"cards" | "compact">("cards");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +85,7 @@ export function ReviewQueue() {
     };
   }, [data]);
 
+  const visible = tab === "not_actioned" ? groups.not_actioned : applyFilters(groups[tab], filters);
   if (!data) return <div className="p-10 text-slate-500">{error ?? "Loading…"}</div>;
   const m = data.metrics;
 
@@ -142,7 +147,10 @@ export function ReviewQueue() {
       </nav>
 
       <main className="mt-4 space-y-4">
-        {tab === "review" && <BulkReminderBar proposals={groups.review} onChange={load} />}
+        {tab !== "not_actioned" && (
+          <QueueToolbar filters={filters} setFilters={setFilters} groupBy={groupBy} setGroupBy={setGroupBy} view={view} setView={setView} shown={visible.length} total={groups[tab].length} />
+        )}
+        {tab === "review" && <BulkReminderBar proposals={visible} onChange={load} />}
         {groups[tab].length === 0 && (
           <p className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
             {data.lastRun ? "Nothing here." : "No runs yet. Click “Run engine on stale carts”."}
@@ -150,7 +158,9 @@ export function ReviewQueue() {
         )}
         {tab === "not_actioned"
           ? groups.not_actioned.map((p) => <NoOfferRow key={p.id} p={p} />)
-          : groups[tab].map((p) => <OfferCard key={p.id} p={p} onChange={load} now={data.now} />)}
+          : groupProposals(visible, groupBy).map((g) => (
+              <GroupBlock key={`${tab}:${groupBy}:${JSON.stringify(filters)}:${view}:${g.key}`} group={g} showHeader={groupBy !== "none"} view={view} now={data.now} onChange={load} />
+            ))}
       </main>
 
       {data.lastRun?.stats && <DataIssues issues={(data.lastRun.stats as { dataIssues: { cartId: string; field: string; raw: string; issue: string }[] }).dataIssues} />}
@@ -200,7 +210,7 @@ function BulkReminderBar({ proposals, onChange }: { proposals: ProposalView[]; o
       ) : !confirming ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>
-            <b>{eligible.length} no-discount reminders</b> are ready. Promos, merch codes and perks are always approved one by one.
+            <b>{eligible.length} no-discount reminders</b> in this view are ready. Promos, merch codes and perks are always approved one by one.
           </span>
           <button onClick={() => setConfirming(true)} className="rounded-md border border-teal-700 bg-white px-3 py-1.5 font-semibold text-teal-800 hover:bg-teal-50">
             Approve all reminders…
@@ -307,6 +317,188 @@ function HoldoutNote() {
         This fan was picked at random and is not contacted about this match. The offer above is what they would have received. Comparing how often held-out fans
         still buy with how often offered fans buy shows whether offers earn revenue or just discount purchases that would have happened anyway.
       </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reviewing at volume: filter, group (with per-group totals), compact rows, paging.
+
+const PAGE = 10;
+const sel = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs";
+
+function QueueToolbar(props: {
+  filters: Filters;
+  setFilters: (f: Filters) => void;
+  groupBy: GroupBy;
+  setGroupBy: (g: GroupBy) => void;
+  view: "cards" | "compact";
+  setView: (v: "cards" | "compact") => void;
+  shown: number;
+  total: number;
+}) {
+  const { filters: f, setFilters } = props;
+  const set = <K extends keyof Filters>(k: K, v: Filters[K]) => setFilters({ ...f, [k]: v });
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+      <label className="flex items-center gap-1">
+        Group
+        <select className={sel} value={props.groupBy} onChange={(e) => props.setGroupBy(e.target.value as GroupBy)}>
+          <option value="none">None (by deadline)</option>
+          <option value="match">Match</option>
+          <option value="match_section">Match &amp; section</option>
+          <option value="offer">Offer type</option>
+        </select>
+      </label>
+      <select className={sel} value={f.offer} onChange={(e) => set("offer", e.target.value as Filters["offer"])} aria-label="Offer type">
+        <option value="all">All offers</option>
+        <option value="reminder">Reminders</option>
+        <option value="promo_code">Ticket promo codes</option>
+        <option value="merch_addon">Merch vouchers</option>
+        <option value="perk">Perks</option>
+      </select>
+      <select className={sel} value={f.channel} onChange={(e) => set("channel", e.target.value as Filters["channel"])} aria-label="Channel">
+        <option value="all">All channels</option>
+        <option value="email">Email</option>
+        <option value="push">Push</option>
+        <option value="sales_task">Sales call</option>
+      </select>
+      <select className={sel} value={f.segment} onChange={(e) => set("segment", e.target.value as Filters["segment"])} aria-label="Fan segment">
+        <option value="all">All fans</option>
+        <option value="NEW_FAN">First-time buyers</option>
+        <option value="REGULAR_FAN">Regular fans</option>
+        <option value="LAPSED_FAN">Lapsed fans</option>
+        <option value="SEASON_PASS_HOLDER">Season-pass holders</option>
+      </select>
+      <input className={`${sel} w-36`} placeholder="Fan or cart ID" value={f.q} onChange={(e) => set("q", e.target.value)} />
+      {JSON.stringify(f) !== JSON.stringify(DEFAULT_FILTERS) && (
+        <button className="text-slate-500 underline" onClick={() => setFilters(DEFAULT_FILTERS)}>
+          Clear
+        </button>
+      )}
+      <span className="ml-auto">
+        Showing {props.shown} of {props.total}
+      </span>
+      <div className="flex overflow-hidden rounded-md border border-slate-300">
+        {(["cards", "compact"] as const).map((v) => (
+          <button key={v} onClick={() => props.setView(v)} className={`px-2 py-1 ${props.view === v ? "bg-teal-700 text-white" : "bg-white"}`}>
+            {v === "cards" ? "Cards" : "Compact"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GroupBlock({ group, showHeader, view, now, onChange }: { group: Group; showHeader: boolean; view: "cards" | "compact"; now: string; onChange: () => Promise<void> }) {
+  const [shown, setShown] = useState(PAGE);
+  const [open, setOpen] = useState(true);
+  const s = group.summary;
+  const items = group.items.slice(0, shown);
+  return (
+    <section className="space-y-3">
+      {showHeader && (
+        <button onClick={() => setOpen(!open)} className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-slate-200 pb-1 text-left text-sm">
+          <span className="font-semibold text-slate-800">
+            {open ? "▾" : "▸"} {group.label}
+          </span>
+          <span className="text-xs text-slate-500">
+            {s.count} offer{s.count === 1 ? "" : "s"} · carts {money(s.cartValueCents)}
+            {s.ticketDiscountCents ? ` · ticket discount ${money(s.ticketDiscountCents)}` : ""}
+            {s.merchVoucherMaxCents ? ` · vouchers up to ${money(s.merchVoucherMaxCents)}` : ""}
+            {s.perks ? ` · ${s.perks} perk${s.perks === 1 ? "" : "s"}` : ""}
+          </span>
+        </button>
+      )}
+      {open && (
+        <>
+          {view === "compact" ? (
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              {items.map((p) => (
+                <CompactRow key={p.id} p={p} now={now} onChange={onChange} />
+              ))}
+            </div>
+          ) : (
+            items.map((p) => <OfferCard key={p.id} p={p} onChange={onChange} now={now} />)
+          )}
+          {group.items.length > shown && (
+            <button className="w-full rounded-md border border-dashed border-slate-300 py-1.5 text-xs text-slate-600 hover:bg-slate-100" onClick={() => setShown(shown + PAGE)}>
+              Show {Math.min(PAGE, group.items.length - shown)} more ({group.items.length - shown} left)
+            </button>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function timeLeft(expiresAt: string, now: string) {
+  const ms = Date.parse(expiresAt) - Date.parse(now);
+  const h = Math.floor(ms / 3_600_000);
+  const label = ms <= 0 ? "expired" : h >= 48 ? `${Math.floor(h / 24)}d left` : h >= 1 ? `${h}h left` : "<1h left";
+  const cls = ms <= 0 || h < 24 ? "text-red-700" : h < 48 ? "text-amber-700" : "text-slate-500";
+  return { label, cls };
+}
+
+const costShort = (costs: CostLine[]) =>
+  costs.length === 0
+    ? "No discount"
+    : costs.map((c) => (c.kind === "ticket_discount" ? `−${money(c.amountCents ?? 0)} ticket` : c.kind === "merch_voucher" ? `≤${money(c.amountCents ?? 0)} voucher` : "Perk")).join(", ");
+
+/** One line per offer for scanning many; "Open" expands the full card for detail and editing. */
+function CompactRow({ p, now, onChange }: { p: ProposalView; now: string; onChange: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const prop = p.proposal!;
+  const lapsed = isLapsed(p, now);
+  const [statusLabel, statusCls] = STATUS[lapsed ? "expired" : p.status];
+  const canApprove = p.status === "pending_review" && !lapsed;
+  const segment = p.reasonCodes.map((c) => SEGMENTS[c]).find(Boolean);
+  const t = timeLeft(prop.expiresAt, now);
+  const approve = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api(`/api/proposals/${p.id}/approve`, { method: "POST" });
+      await onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="border-b border-slate-100 last:border-b-0">
+      <div className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 px-3 py-2 text-sm md:grid-cols-[4.5rem_10rem_1fr_7rem_4.5rem_9rem_6.5rem_auto]">
+        <span className={`text-xs font-medium ${OPEN.includes(p.status) ? t.cls : "text-slate-400"}`}>{OPEN.includes(p.status) ? t.label : "—"}</span>
+        <span className="truncate">
+          {p.fanId} <span className="text-xs text-slate-500">{segment}</span>
+        </span>
+        <span className="hidden truncate md:block">{describeOffer(prop.offer)}</span>
+        <span className="hidden text-xs text-slate-600 md:block">{describeChannel(prop.channel).replace(" (task for the salesperson)", "")}</span>
+        <span className="hidden text-right md:block">{money(prop.cartValueCents)}</span>
+        <span className="hidden text-xs text-slate-600 md:block">{costShort(prop.costs ?? [])}</span>
+        <span className="hidden md:block">
+          <Chip className={statusCls}>{statusLabel}</Chip>
+        </span>
+        <span className="flex justify-end gap-1">
+          {canApprove && (
+            <button onClick={approve} disabled={busy} className="rounded bg-teal-700 px-2 py-1 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-60">
+              {busy ? "…" : prop.channel === "sales_task" ? "Task" : "Approve"}
+            </button>
+          )}
+          <button onClick={() => setOpen(!open)} className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100">
+            {open ? "Close" : "Open"}
+          </button>
+        </span>
+      </div>
+      {err && <div className="px-3 pb-2 text-xs text-red-700">{err}</div>}
+      {open && (
+        <div className="bg-slate-50 p-3">
+          <OfferCard p={p} onChange={onChange} now={now} />
+        </div>
+      )}
     </div>
   );
 }
@@ -825,6 +1017,13 @@ function DemoControls({ data, onChange }: { data: QueueData; onChange: () => Pro
         <button className="rounded-md border border-slate-300 bg-white px-3 py-1.5" onClick={() => dev({ action: "reset" })}>
           Reset demo
         </button>
+        <div className="flex overflow-hidden rounded-md border border-slate-300" title="Switching starts from a clean slate">
+          {(["sample", "synthetic"] as const).map((d) => (
+            <button key={d} onClick={() => dev({ action: "set_dataset", dataset: d })} className={`px-3 py-1.5 ${data.dataset === d ? "bg-slate-800 text-white" : "bg-white"}`}>
+              {d === "sample" ? "Sample (8 carts)" : "Synthetic (~150 carts, template copy)"}
+            </button>
+          ))}
+        </div>
         <button className="rounded-md border border-slate-300 bg-white px-3 py-1.5" onClick={() => dev({ action: "advance_clock", days: 4 })}>
           Advance clock 4 days
         </button>
@@ -837,7 +1036,7 @@ function DemoControls({ data, onChange }: { data: QueueData; onChange: () => Pro
       <div className="mt-3">
         <div className="text-xs font-semibold uppercase text-slate-500">Fan opt-ins (live consent, re-checked at send)</div>
         <div className="mt-1 flex flex-wrap gap-2">
-          {fans.map((f) => (
+          {fans.slice(0, 12).map((f) => (
             <div key={f.fanId} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs">
               {f.fanId}{" "}
               {(["email", "push"] as const).map((ch) => (
@@ -847,13 +1046,14 @@ function DemoControls({ data, onChange }: { data: QueueData; onChange: () => Pro
               ))}
             </div>
           ))}
+          {fans.length > 12 && <span className="self-center text-xs text-slate-500">and {fans.length - 12} more</span>}
         </div>
       </div>
       {decidedFans.length > 0 && (
         <div className="mt-3">
           <div className="text-xs font-semibold uppercase text-slate-500">Fan bought (stands in for a ticketing &quot;order completed&quot; event)</div>
           <div className="mt-1 flex flex-wrap gap-2">
-            {decidedFans.map((fanId) => (
+            {decidedFans.slice(0, 12).map((fanId) => (
               <button key={fanId} className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs" onClick={() => dev({ action: "complete_cart", fanId })}>
                 {fanId} bought
               </button>
