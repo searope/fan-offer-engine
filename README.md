@@ -135,11 +135,15 @@ holdout and lift measurement (`30e349f`), and the queue at volume (`0592fdc`).
 
 ## At 10× and 100× the volume
 
-- **Queue.** One card at a time doesn't hold at 100×. The queue now groups by match, match & section, or
-  offer type, with per-group totals that keep ticket discount, voucher worst case and perks apart. It filters
-  by offer, channel, segment and ID, has a one-line compact view, and pages ten at a time. A marketer works
-  group by group: bulk-approve a group's no-discount reminders, and open only the discounts, perks and
-  blocked cards. Discounts stay one by one.
+- **Queue.** One card at a time doesn't hold at 100×, and neither does a long list. "Needs review" opens on a
+  **board**: matches × offer type, or offer type × deadline lane (Today, Tomorrow, This week, Later). Each cell
+  shows its count, cart value, cost by kind, earliest deadline, and how many items need judgment. Clicking a
+  cell opens that slice **exceptions first**: routine no-discount reminders collapse into one batch with a
+  5-fan spot-check and "Approve batch", and only discounts, perks, blocked or failed sends and guest-linked
+  fans are listed, each tagged with why. They're worked in a **split pane** (list left, full card right) with
+  J/K to move, A approve, E edit, R reject and Esc back. On 150 synthetic carts that's a 3×4 board on one
+  screen, and a slice of 29 reminders becomes one batch of 24 plus 5 items to look at. The plain list (group,
+  filter, compact, paging) is still one click away.
 - **Engine.** `decide()` is linear and pure, so volume is a scheduling question: run per team, per hour. The
   POC's SQLite becomes Postgres, with every row keyed by team.
 - **Claude.** Only proposals get copy, at most 4 calls in flight. At 100× that's a few hundred short drafts a
