@@ -236,11 +236,11 @@ channel; a per-team kill switch (`offersEnabled`) and a per-team daily discount 
 ### B2. Where an AI coding assistant would be plausibly wrong (written without AI)
 
 **The consent bug:** the engine read opt-ins from a stale export snapshot. It passed all the tests and only showed up when the app ran end to end.
-The AI did a good job implementing the app. I've tried to mess with the discounts and promos but I quicly realized that it's not my department. 
+The AI did a good job implementing the app. I've tried to mess with the discounts and promos but I quickly realized that it's not my department. 
 I've checked the generated rules to make sense. But mostly I've concentrated on the usability of the UI and small errors in it.
 **Expired tab:** initially the tab was Rejected/Expired and it wasn't filled. 
 **Expired reminders:** They were shown anyway. Now they are filtered out to Expired tab.
-**Discout::** initially it was confusing what it's supposed to show. Now it's a generic to handle both price and merch discounts, and seats upgrates. And whaterver else the marketing will come up with.
+**Discout:** initially it was confusing what it's supposed to show. Now it's a generic to handle both ticket and merch discounts. And whaterver else the marketing will come up with. **UI to support lots of reminders:** Evaluated several different approaches. Emplemented the one with the best usability.
 
 ---
 
@@ -288,23 +288,30 @@ checks, a run-stopped alert and an anomaly pause that weren't built. *Changed:* 
 holdout went from described to built, with tests written first; the queue got grouping, filters, a compact
 view and paging, with a synthetic dataset to show it; and this README got one ordered roadmap and a
 volume section. The engine's holdout hash happened to put F-204 in the holdout. The experiment name was fixed
-before checking the result, not tuned until the demo looked nice. **Me:** _…_
+before checking the result, not tuned until the demo looked nice. **Me:** "This is the response to the assessment. Come with the list of
+improvements we can do with the solution." From the AI's list I chose all four it offered: enforce the key
+assumption, build the holdout, make the queue work at scale, and one ordered roadmap with scale notes.
 
 **7. The queue as a long list → a review board.** *Asked:* the queue becomes an unmanageable long list at
 volume; come up with something better. *AI gave:* four patterns (summary board, exceptions first, split pane
 with keys, deadline lanes) and recommended the first three. I picked all four; the AI pushed back on making
 deadline lanes a fifth screen and made them a column switch on the board instead. *Built (`e5b8042`):* the board,
 slices that batch routine reminders behind a 5-item spot-check, a "why it needs judgment" tag on everything
-else, and a split pane with J/K/A/E/R. **Me:** _…_
+else, and a split pane with J/K/A/E/R. **Me:** The UI handles lots of stale cart records as a very long list. Let's
+come up with something more manageable, then: adjust the height of the reminders
+list to be same as the reminder card.
 
 **8. "Isn't the send-by date just the match?"** *Asked:* whether the send-by date essentially defines the match
 a reminder applies to. *AI gave:* yes, today, because every offer's send-by is kickoff − 6 h; and that exposed a
 bug: the escalated promo's 48 h rule (SPEC §4a) is only checked when the engine decides, so a promo can be sent
 10 h before kickoff. It proposed a send-by per offer type. *Changed:* documented as a known gap (Section A,
-B1), not yet built. **Me:** _…_
+B1), not yet built. **Me:** Isn't the send-by date essentially defining the match a reminder
+applies to?
 
 **9. Two voucher gaps.** *Raised while checking the app:* (1) the merch code arrives in the same push that asks
 the fan to buy the ticket, so it can be used without buying; (2) `promo_codes.redeemed_at` is never written, so
 voucher and discount cost only ever show the worst case. *AI gave:* the fixes (send the merch code in the ticket
 confirmation, after purchase; a redemption feed from the shop and ticketing). *Changed (`004ebe3`):* documented
-in Section A and B1, by choice not built yet. **Me:** _…_
+in Section A and B1, by choice not built yet. **Me:** I pick the first. It's simpler, it can't be gamed, and the push message
+stays honest. And add both gaps to the README's 'Not built yet' line and the B1 risk table, so they're
+stated rather than discovered by a reviewer. Then I chose to leave them documented rather than build them now.
