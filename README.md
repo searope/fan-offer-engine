@@ -179,7 +179,8 @@ safe template on any failure (see "Where AI is used").
 
 **Not built yet:** real ingestion (the sample export is the input), auth and roles, real providers, copy A/B
 tests, seat-upgrade and match-pass offers. Marketers can't edit rules: thresholds live in `policy.ts` and team
-settings in `tenants.ts`, so a change is a reviewed, tested deploy.
+settings in `tenants.ts`, so a change is a reviewed, tested deploy. Code redemption isn't tracked,
+and merch codes should arrive with the ticket confirmation, not before (B1).
 **Next:** live cart events with hourly runs, then reading the holdout, then trigger #2 (see Roadmap).
 
 **A second trigger without a rewrite.** Everything after "who is a candidate" is trigger-agnostic: the
@@ -216,6 +217,8 @@ and across matches, not per send. Alongside it:
 |---|---|
 | Source data looks valid but is wrong (stale sell-through → discount on a section that's selling; a consent column flipped in an export) | **Built:** `checkExport()` runs before every decision: freshness, one sell-through per section, no implausible drops vs the last accepted export, opted-in share swings, export-vs-fan-record consent disagreement, unreadable rows. Any failure pauses the run with a red banner; running anyway needs an audited reason. Consent also comes from the fan record, and unreadable opt-ins count as "No". |
 | Offer to a fan who already bought | **Built:** a send-time check against completed orders blocks it. |
+| Merch voucher used without buying the ticket. The push says "finish your ticket and get 10% off in the shop", but the code arrives in that same push, so a fan can skip the ticket and still use the code: a free merch discount instead of a win-back incentive | **Not built yet.** Fix: send the code *after* purchase, in the ticket confirmation, so only fans who bought ever receive it. It can't be gamed, and the push stays honest: "finish your order and we'll send you a 10% shop code". (The alternative, checking at redemption that the fan has a ticket for that match via `cart_completions`, needs a shop-side integration and is easier to get wrong.) |
+| Discount cost only ever shown as the worst case. `promo_codes.redeemed_at` exists but nothing writes to it, so "Merch vouchers (max)" and "Ticket discount committed" show what *could* be given away, never what was | **Not built yet.** Fix: a redemption feed from the shop (merch codes) and ticketing (ticket codes) that sets `redeemed_at`. The KPIs then show committed vs actually redeemed, and the holdout lift can be read net of the real discount cost. |
 | Wrong identity merge (shared family email) | Exact match to exactly one account only, otherwise held. Merge count is monitored. |
 | Rule regression in a code change (threshold edit makes everyone promo-eligible) | Golden tests on the sample + invariants on generated carts in CI. Guardrails run independently of `decide()`, and a mismatch is flagged as an engine bug. DB CHECK constraints reject codes over 15% or multi-use. Per-run anomaly check: proposal count and committed discount vs trailing average. |
 | Model writes something false (fake scarcity, wrong %) | Lint, then human review. Rejected drafts are logged with reasons. |
