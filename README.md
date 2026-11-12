@@ -179,8 +179,8 @@ safe template on any failure (see "Where AI is used").
 
 **Not built yet:** real ingestion (the sample export is the input), auth and roles, real providers, copy A/B
 tests, seat-upgrade and match-pass offers. Marketers can't edit rules: thresholds live in `policy.ts` and team
-settings in `tenants.ts`, so a change is a reviewed, tested deploy. Code redemption isn't tracked,
-and merch codes should arrive with the ticket confirmation, not before (B1).
+settings in `tenants.ts`, so a change is a reviewed, tested deploy. Known gaps: untracked
+redemptions, merch codes sent before purchase, and the promo send-by (B1).
 **Next:** live cart events with hourly runs, then reading the holdout, then trigger #2 (see Roadmap).
 
 **A second trigger without a rewrite.** Everything after "who is a candidate" is trigger-agnostic: the
@@ -218,6 +218,7 @@ and across matches, not per send. Alongside it:
 | Source data looks valid but is wrong (stale sell-through → discount on a section that's selling; a consent column flipped in an export) | **Built:** `checkExport()` runs before every decision: freshness, one sell-through per section, no implausible drops vs the last accepted export, opted-in share swings, export-vs-fan-record consent disagreement, unreadable rows. Any failure pauses the run with a red banner; running anyway needs an audited reason. Consent also comes from the fan record, and unreadable opt-ins count as "No". |
 | Offer to a fan who already bought | **Built:** a send-time check against completed orders blocks it. |
 | Merch voucher used without buying the ticket. The push says "finish your ticket and get 10% off in the shop", but the code arrives in that same push, so a fan can skip the ticket and still use the code: a free merch discount instead of a win-back incentive | **Not built yet.** Fix: send the code *after* purchase, in the ticket confirmation, so only fans who bought ever receive it. It can't be gamed, and the push stays honest: "finish your order and we'll send you a 10% shop code". (The alternative, checking at redemption that the fan has a ticket for that match via `cart_completions`, needs a shop-side integration and is easier to get wrong.) |
+| Escalated ticket promo sent too close to kickoff. The §4a rule only proposes the 10% follow-up when kickoff is at least 48 h away, but that is checked only when the engine decides; every offer's send-by is kickoff − 6 h, so a promo proposed 50 h out can be approved and sent 10 h before kickoff, discounting seats that would likely sell at full price | **Not built yet.** Fix: a send-by per offer type, from that offer's own rule: reminder kickoff − 6 h, ticket promo − 48 h, merch voucher − 6 h, perk (sales call) − 24 h. The existing send-time expiry check then enforces it, and the send-by date stops being just a stand-in for the match. |
 | Discount cost only ever shown as the worst case. `promo_codes.redeemed_at` exists but nothing writes to it, so "Merch vouchers (max)" and "Ticket discount committed" show what *could* be given away, never what was | **Not built yet.** Fix: a redemption feed from the shop (merch codes) and ticketing (ticket codes) that sets `redeemed_at`. The KPIs then show committed vs actually redeemed, and the holdout lift can be read net of the real discount cost. |
 | Wrong identity merge (shared family email) | Exact match to exactly one account only, otherwise held. Merge count is monitored. |
 | Rule regression in a code change (threshold edit makes everyone promo-eligible) | Golden tests on the sample + invariants on generated carts in CI. Guardrails run independently of `decide()`, and a mismatch is flagged as an engine bug. DB CHECK constraints reject codes over 15% or multi-use. Per-run anomaly check: proposal count and committed discount vs trailing average. |
@@ -288,3 +289,22 @@ holdout went from described to built, with tests written first; the queue got gr
 view and paging, with a synthetic dataset to show it; and this README got one ordered roadmap and a
 volume section. The engine's holdout hash happened to put F-204 in the holdout. The experiment name was fixed
 before checking the result, not tuned until the demo looked nice. **Me:** _…_
+
+**7. The queue as a long list → a review board.** *Asked:* the queue becomes an unmanageable long list at
+volume; come up with something better. *AI gave:* four patterns (summary board, exceptions first, split pane
+with keys, deadline lanes) and recommended the first three. I picked all four; the AI pushed back on making
+deadline lanes a fifth screen and made them a column switch on the board instead. *Built (`e5b8042`):* the board,
+slices that batch routine reminders behind a 5-item spot-check, a "why it needs judgment" tag on everything
+else, and a split pane with J/K/A/E/R. **Me:** _…_
+
+**8. "Isn't the send-by date just the match?"** *Asked:* whether the send-by date essentially defines the match
+a reminder applies to. *AI gave:* yes, today, because every offer's send-by is kickoff − 6 h; and that exposed a
+bug: the escalated promo's 48 h rule (SPEC §4a) is only checked when the engine decides, so a promo can be sent
+10 h before kickoff. It proposed a send-by per offer type. *Changed:* documented as a known gap (Section A,
+B1), not yet built. **Me:** _…_
+
+**9. Two voucher gaps.** *Raised while checking the app:* (1) the merch code arrives in the same push that asks
+the fan to buy the ticket, so it can be used without buying; (2) `promo_codes.redeemed_at` is never written, so
+voucher and discount cost only ever show the worst case. *AI gave:* the fixes (send the merch code in the ticket
+confirmation, after purchase; a redemption feed from the shop and ticketing). *Changed (`004ebe3`):* documented
+in Section A and B1, by choice not built yet. **Me:** _…_
