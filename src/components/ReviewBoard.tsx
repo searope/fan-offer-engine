@@ -247,7 +247,10 @@ function SliceView({ title, items, now, onChange, onBack }: { title: string; ite
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-[22rem_1fr]">
-          <div className="max-h-[70vh] overflow-y-auto rounded-lg border border-slate-200 bg-white">
+          {/* Side by side, the card sets the row height: the list is taken out of flow (absolute) and scrolls
+              inside exactly that height. Stacked on narrow screens, it gets a capped height instead. */}
+          <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white lg:min-h-64">
+            <div className="max-h-[60vh] overflow-y-auto lg:absolute lg:inset-0 lg:max-h-none">
             {list.map((p, i) => {
               const t = timeLeft(p.proposal!.expiresAt, now);
               const [label, cls] = STATUS[p.status];
@@ -255,6 +258,7 @@ function SliceView({ title, items, now, onChange, onBack }: { title: string; ite
               return (
                 <button
                   key={p.id}
+                  ref={p === current ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
                   onClick={() => select(i)}
                   className={`flex w-full items-start gap-2 border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 ${p === current ? "bg-teal-50" : "hover:bg-slate-50"}`}
                 >
@@ -272,6 +276,7 @@ function SliceView({ title, items, now, onChange, onBack }: { title: string; ite
                 </button>
               );
             })}
+            </div>
           </div>
           <div>
             {current && (
