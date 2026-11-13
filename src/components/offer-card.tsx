@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProposalView } from "@/server/service";
 import type { Channel, CostLine, Offer, RawCartRow } from "@/engine/types";
 import { describeChannel, describeOffer } from "@/engine/reasons";
@@ -255,7 +255,18 @@ export function OfferCard({
         </div>
       )}
 
-      {mode === "reject" && <RejectPanel busy={busy} onCancel={() => setMode("view")} onReject={(reason, note) => act(() => api(`/api/proposals/${p.id}/reject`, { method: "POST", body: JSON.stringify({ reason, note }) }), "rejected")} />}
+      {mode === "reject" && (
+        <RejectPanel
+          title={`${describeOffer(prop.offer)} via ${describeChannel(prop.channel)} · fan ${p.fanId}`}
+          busy={busy}
+          error={err?.message}
+          onCancel={() => {
+            setErr(null);
+            setMode("view");
+          }}
+          onReject={(reason, note) => act(() => api(`/api/proposals/${p.id}/reject`, { method: "POST", body: JSON.stringify({ reason, note }) }), "rejected")}
+        />
+      )}
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/60 px-4 py-2.5">
         <div className="flex flex-wrap gap-4">
@@ -427,29 +438,97 @@ export function EditPanel({ p, busy, onSave, onCancel }: { p: ProposalView; busy
   );
 }
 
-export function RejectPanel({ busy, onReject, onCancel }: { busy: boolean; onReject: (reason: string, note: string) => void; onCancel: () => void }) {
-  const [reason, setReason] = useState("wrong_offer");
+export function RejectPanel({
+  title,
+  busy,
+  error,
+  onReject,
+  onCancel,
+}: {
+  /** What is being rejected, e.g. "Reminder via email · fan F-511". */
+  title: string;
+  busy: boolean;
+  error?: string;
+  onReject: (reason: string, note: string) => void;
+  onCancel: () => void;
+}) {
+  const [reason, setReason] = useState("");
   const [note, setNote] = useState("");
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  // A native modal dialog: backdrop, focus kept inside, and Esc fires "cancel". Opened on mount, so the
+  // R shortcut and the Reject button behave the same, and the card's position on the page doesn't matter.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (d && !d.open) d.showModal();
+    return () => d?.close();
+  }, []);
   return (
-    <div className="mx-4 mb-3 flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-      <label>
-        <span className="block text-xs text-slate-500">Why reject? (feeds engine tuning)</span>
-        <select className="rounded-md border border-slate-300 px-2 py-1.5" value={reason} onChange={(e) => setReason(e.target.value)}>
-          <option value="wrong_offer">Wrong offer</option>
-          <option value="wrong_fan">Shouldn&apos;t contact this fan</option>
-          <option value="bad_copy">Copy isn&apos;t right</option>
-          <option value="bad_timing">Bad timing</option>
-          <option value="other">Other</option>
-        </select>
-      </label>
-      <input className="min-w-48 flex-1 rounded-md border border-slate-300 px-2 py-1.5" placeholder="Optional note" value={note} onChange={(e) => setNote(e.target.value)} />
-      <button onClick={onCancel} className="rounded-md px-3 py-1.5 text-slate-600 hover:bg-slate-200">
-        Cancel
-      </button>
-      <button onClick={() => onReject(reason, note)} disabled={busy} className="rounded-md bg-slate-800 px-3 py-1.5 font-semibold text-white">
-        Reject offer
-      </button>
-    </div>
+    <dialog
+      ref={dialogRef}
+      aria-label="Reject offer"
+      onCancel={(e) => {
+        e.preventDefault();
+        onCancel();
+      }}
+      // A click on the backdrop lands on the <dialog> element itself: treat it as Cancel.
+      onClick={(e) => {
+        if (e.target === dialogRef.current) onCancel();
+      }}
+      // Keys typed in the dialog must not reach the split pane's J/K/A/E/R/Esc shortcuts behind it.
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter" && (e.target as HTMLElement).tagName === "SELECT") {
+          // Browsers only submit on Enter from a text input; the select is where the focus starts.
+          e.preventDefault();
+          formRef.current?.requestSubmit();
+        }
+      }}
+      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-0 text-sm text-slate-900 shadow-xl backdrop:bg-slate-900/40"
+    >
+      <form
+        ref={formRef}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!busy && reason) onReject(reason, note.trim());
+        }}
+        className="space-y-3 p-4"
+      >
+        <div>
+          <h3 className="text-base font-semibold">Reject this offer?</h3>
+          <p className="mt-0.5 text-slate-600">{title}. Nothing is sent to the fan.</p>
+        </div>
+        <label className="block">
+          <span className="block text-xs text-slate-500">Reason (required, feeds engine tuning)</span>
+          <select required autoFocus className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5" value={reason} onChange={(e) => setReason(e.target.value)}>
+            <option value="" disabled>
+              Choose a reason…
+            </option>
+            <option value="wrong_offer">Wrong offer</option>
+            <option value="wrong_fan">Shouldn&apos;t contact this fan</option>
+            <option value="bad_copy">Copy isn&apos;t right</option>
+            <option value="bad_timing">Bad timing</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="block text-xs text-slate-500">Note (optional)</span>
+          <input className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5" maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        {error && <div className="rounded-md bg-red-50 px-3 py-2 text-red-800">{error}</div>}
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <span className="text-xs text-slate-400">Enter to reject · Esc to close without rejecting</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-slate-600 hover:bg-slate-100">
+              Cancel
+            </button>
+            <button type="submit" disabled={busy} className="rounded-md bg-slate-800 px-3 py-1.5 font-semibold text-white disabled:opacity-60">
+              {busy ? "Rejecting…" : "Reject"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </dialog>
   );
 }
 
