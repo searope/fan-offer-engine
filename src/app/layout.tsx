@@ -12,7 +12,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    // Browser extensions (dark mode, translators, writing tools) often add classes or attributes to <html>
+    // before React loads, which React reports as a hydration mismatch. This only relaxes <html>'s own
+    // attributes; mismatches anywhere inside the page are still reported.
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`} suppressHydrationWarning>
       <body className="min-h-full bg-slate-50 text-slate-900">{children}</body>
     </html>
   );
